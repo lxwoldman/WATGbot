@@ -1,4 +1,154 @@
-const quickReplies = ["0 (已阅)", "1 (就位)", "取消"];
+const supplierQuickReplies = ["0 (已阅)", "1 (就位)", "2 (出货完毕)"];
+
+const defaultCustomCommands = [
+  { id: "wait", label: "等等", text: "等等" },
+  { id: "resume", label: "恢复", text: "恢复" },
+  { id: "cancel", label: "取消", text: "取消" },
+  { id: "urge", label: "催单", text: "好了吗" }
+];
+
+const defaultCommandById = Object.fromEntries(
+  defaultCustomCommands.map((item) => [item.id, item])
+);
+
+const storageKeys = {
+  customCommands: "broker-console.custom-commands.v1",
+  resourceCurrencies: "broker-console.resource-currencies.v1",
+  exchangeRate: "broker-console.exchange-rate.v1",
+  specialTarget: "broker-console.special-target.v1",
+  followAmount: "broker-console.follow-amount.v1",
+  manualAmericas: "broker-console.manual-americas.v1",
+  stableTicket: "broker-console.stable-ticket.v1"
+};
+
+const americasKeywords = [
+  "阿根廷",
+  "安提瓜和巴布达",
+  "巴巴多斯",
+  "巴哈马",
+  "巴拉圭",
+  "巴拿马",
+  "巴西",
+  "秘鲁",
+  "玻利维亚",
+  "多米尼加",
+  "多米尼克",
+  "厄瓜多尔",
+  "哥伦比亚",
+  "委内瑞拉",
+  "哥斯黎达加",
+  "哥斯达黎加",
+  "格林纳达",
+  "古巴",
+  "海地",
+  "洪都拉斯",
+  "加拿大",
+  "美国",
+  "墨西哥",
+  "萨尔瓦多",
+  "圣卢西亚",
+  "圣文森特和格林纳丁斯",
+  "圣基茨和尼维斯",
+  "苏里南",
+  "特立尼达和多巴哥",
+  "危地马拉",
+  "乌拉圭",
+  "牙买加",
+  "智利",
+  "圭亚那",
+  "伯利兹"
+];
+
+function safeParseJson(rawValue, fallback) {
+  if (!rawValue) return fallback;
+  try {
+    return JSON.parse(rawValue);
+  } catch {
+    return fallback;
+  }
+}
+
+function loadJson(key, fallback) {
+  return safeParseJson(window.localStorage.getItem(key), fallback);
+}
+
+function saveJson(key, value) {
+  window.localStorage.setItem(key, JSON.stringify(value));
+}
+
+function loadNumber(key, fallback) {
+  const rawValue = window.localStorage.getItem(key);
+  if (rawValue == null || rawValue === "") return fallback;
+  const parsed = Number(rawValue);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function saveNumber(key, value) {
+  window.localStorage.setItem(key, String(value));
+}
+
+function loadBoolean(key, fallback = false) {
+  const rawValue = window.localStorage.getItem(key);
+  if (rawValue == null) return fallback;
+  return rawValue === "true";
+}
+
+function saveBoolean(key, value) {
+  window.localStorage.setItem(key, value ? "true" : "false");
+}
+
+function roundToTwo(value) {
+  return Math.round((Number(value) + Number.EPSILON) * 100) / 100;
+}
+
+function formatMoney(value) {
+  return roundToTwo(value).toFixed(2);
+}
+
+function makeId(prefix = "cmd") {
+  return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function deriveCommandLabel(text) {
+  const normalized = String(text || "")
+    .split("\n")[0]
+    .split("/")[0]
+    .trim();
+
+  if (!normalized) return "新指令";
+  if (normalized.includes("请尽快回执")) return "催单";
+  return normalized.length > 8 ? `${normalized.slice(0, 8)}...` : normalized;
+}
+
+function normalizeCommand(command, index = 0) {
+  const fallback = defaultCommandById[command?.id] || null;
+  let text = String(command?.text ?? command ?? "").trim();
+  let label = String(command?.label || "").trim();
+
+  if (fallback) {
+    if (text.length <= 1) {
+      text = fallback.text;
+    }
+    if (label.length <= 1) {
+      label = fallback.label;
+    }
+  }
+
+  return {
+    id: String(command?.id || makeId(`cmd-${index}`)),
+    label: label || deriveCommandLabel(text) || `指令 ${index + 1}`,
+    text
+  };
+}
+
+function loadCustomCommands() {
+  const saved = loadJson(storageKeys.customCommands, defaultCustomCommands);
+  const normalized = Array.isArray(saved)
+    ? saved.map((item, index) => normalizeCommand(item, index)).filter((item) => item.text)
+    : [];
+
+  return normalized.length ? normalized : defaultCustomCommands.map((item, index) => normalizeCommand(item, index));
+}
 
 const state = {
   snapshot: null,
@@ -8,6 +158,16 @@ const state = {
   recentChats: [],
   resourceSyncTimers: {},
   lastSourceFingerprint: "",
+  latestFeedbackPrice: "",
+  latestSupplierRepriceText: "",
+  customCommands: loadCustomCommands(),
+  resourceCurrencies: loadJson(storageKeys.resourceCurrencies, {}),
+  exchangeRate: loadNumber(storageKeys.exchangeRate, 7),
+  specialTarget: loadNumber(storageKeys.specialTarget, 20000),
+  followAmount: loadNumber(storageKeys.followAmount, 5000),
+  manualAmericas: loadBoolean(storageKeys.manualAmericas, false),
+  lastStableTicket: loadJson(storageKeys.stableTicket, null),
+  receiptOddsManual: false,
   integration: {
     whatsapp: null,
     telegram: null
@@ -24,6 +184,9 @@ const els = {
   sourceMessageText: document.getElementById("sourceMessageText"),
   extractMessageBtn: document.getElementById("extractMessageBtn"),
   quickReplyContainer: document.getElementById("quickReplyContainer"),
+  supplierFeedbackBox: document.getElementById("supplierFeedbackBox"),
+  supplierFeedbackText: document.getElementById("supplierFeedbackText"),
+  supplierFeedbackBtn: document.getElementById("supplierFeedbackBtn"),
   ticketIdBadge: document.getElementById("ticketIdBadge"),
   inpLeague: document.getElementById("inpLeague"),
   inpTeam: document.getElementById("inpTeam"),
@@ -32,11 +195,29 @@ const els = {
   oddsRebate: document.getElementById("oddsRebate"),
   oddsFinal: document.getElementById("oddsFinal"),
   targetTotal: document.getElementById("targetTotal"),
+  specialTarget: document.getElementById("specialTarget"),
+  followAmount: document.getElementById("followAmount"),
+  exchangeRate: document.getElementById("exchangeRate"),
+  americasOrderCheckbox: document.getElementById("americasOrderCheckbox"),
   targetAllocated: document.getElementById("targetAllocated"),
+  effectiveTarget: document.getElementById("effectiveTarget"),
   targetGap: document.getElementById("targetGap"),
+  targetHintText: document.getElementById("targetHintText"),
   gapBox: document.getElementById("gapBox"),
   sumConfirmed: document.getElementById("sumConfirmed"),
+  corePrepBtn: document.getElementById("corePrepBtn"),
+  coreMarketBtn: document.getElementById("coreMarketBtn"),
+  customCommandContainer: document.getElementById("customCommandContainer"),
+  commandManageBtn: document.getElementById("commandManageBtn"),
+  commandModal: document.getElementById("commandModal"),
+  commandModalCloseBtn: document.getElementById("commandModalCloseBtn"),
+  commandEditorList: document.getElementById("commandEditorList"),
+  commandAddBtn: document.getElementById("commandAddBtn"),
+  commandSaveBtn: document.getElementById("commandSaveBtn"),
   resourceContainer: document.getElementById("resourceContainer"),
+  resourceRepriceBox: document.getElementById("resourceRepriceBox"),
+  resourceRepriceText: document.getElementById("resourceRepriceText"),
+  resourceRepriceBtn: document.getElementById("resourceRepriceBtn"),
   recTarget: document.getElementById("recTarget"),
   recAmt: document.getElementById("recAmt"),
   recCount: document.getElementById("recCount"),
@@ -44,8 +225,6 @@ const els = {
   recText: document.getElementById("recText"),
   receiptSendButton: document.getElementById("receiptSendButton"),
   receiptCopyButton: document.getElementById("receiptCopyButton"),
-  alertText: document.getElementById("alertText"),
-  alertActionBtn: document.getElementById("alertActionBtn"),
   opsGlobalBadge: document.getElementById("opsGlobalBadge"),
   waStatusBadge: document.getElementById("waStatusBadge"),
   waConnectQrBtn: document.getElementById("waConnectQrBtn"),
@@ -73,6 +252,7 @@ const els = {
   bindRefreshBtn: document.getElementById("bindRefreshBtn"),
   bindApplyBtn: document.getElementById("bindApplyBtn"),
   bindDiscoverySelect: document.getElementById("bindDiscoverySelect"),
+  bindSearchInput: document.getElementById("bindSearchInput"),
   bindNoteInput: document.getElementById("bindNoteInput"),
   bindMetaText: document.getElementById("bindMetaText"),
   copyMarketBtn: document.getElementById("copyMarketBtn"),
@@ -150,6 +330,27 @@ function notify(text, tone = "", toast = false) {
   }
 }
 
+function getExchangeRateValue() {
+  return Math.max(Number(els.exchangeRate.value || state.exchangeRate || 7), 0.01);
+}
+
+function getSpecialTargetValue() {
+  return Math.max(Number(els.specialTarget.value || state.specialTarget || 0), 0);
+}
+
+function getFollowAmountValue() {
+  return Math.max(Number(els.followAmount.value || state.followAmount || 0), 0);
+}
+
+function isAmericasLeague(text) {
+  const league = String(text || "");
+  return americasKeywords.some((keyword) => league.includes(keyword));
+}
+
+function isAmericasOrder() {
+  return Boolean(els.americasOrderCheckbox.checked || isAmericasLeague(els.inpLeague.value));
+}
+
 function currentTicketPatch() {
   return {
     sourceChannelId: els.sourceChannelSelect.value,
@@ -162,39 +363,313 @@ function currentTicketPatch() {
   };
 }
 
-function calculateLocal() {
-  const raw = Number(els.oddsRaw.value || 0);
-  const rebate = Number(els.oddsRebate.value || 0);
-  const finalOdds = Math.max(raw - rebate, 0).toFixed(2);
-  els.oddsFinal.value = finalOdds;
-  els.recOdds.value = finalOdds;
-
-  let allocated = 0;
-  document.querySelectorAll(".rc-row").forEach((row) => {
-    if (row.classList.contains("disabled")) return;
-    allocated += Number(row.querySelector(".resource-amount")?.value || 0);
-  });
-
-  const target = Number(els.targetTotal.value || 0);
-  const gap = Math.max(target - allocated, 0);
-  els.targetAllocated.value = allocated;
-  els.targetGap.value = gap;
-  els.sumConfirmed.textContent = `已分配: ${allocated}U`;
-  els.gapBox.className = gap > 0 ? "data-box gap-alert" : "data-box";
-  els.gapBox.style.background = gap > 0 ? "" : "#f0f9eb";
-  els.gapBox.style.borderColor = gap > 0 ? "" : "#e1f3d8";
-
-  updateReceiptText();
+function splitTextLines(text) {
+  return String(text || "")
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
 }
 
-function updateReceiptText() {
-  const count = els.recCount.value;
-  const league = els.inpLeague.value;
-  const team = els.inpTeam.value;
-  const marketClean = els.inpMarket.value.split("@")[0].trim();
-  const finalOdds = els.recOdds.value;
-  const amt = els.recAmt.value;
-  els.recText.value = `${count}.${league}\n${team}\n${marketClean} @ ${finalOdds}确${amt}`;
+function parseRawOdds(text) {
+  const matches = [...String(text || "").matchAll(/[＠@]\s*([0-9]+(?:\.[0-9]+)?)/g)];
+  return matches.length ? matches[matches.length - 1][1] : "";
+}
+
+function parseSourceMessage(text) {
+  const lines = splitTextLines(text);
+
+  if (!lines.length) {
+    return {
+      league: "",
+      teams: "",
+      marketText: "",
+      rawOdds: ""
+    };
+  }
+
+  let marketIndex = -1;
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    if (/@\s*[0-9]+(?:\.[0-9]+)?/.test(lines[index])) {
+      marketIndex = index;
+      break;
+    }
+  }
+
+  let league = lines[0] || "";
+  let teams = lines[1] || "";
+  let marketLines = lines.slice(2);
+
+  if (marketIndex >= 2) {
+    league = lines[marketIndex - 2] || league;
+    teams = lines[marketIndex - 1] || teams;
+    marketLines = lines.slice(marketIndex);
+  } else if (
+    lines.length >= 4 &&
+    /滚球|让球|大小|足球|篮球|网球|棒球|冰球/.test(lines[0])
+  ) {
+    league = lines[1] || league;
+    teams = lines[2] || teams;
+    marketLines = lines.slice(3);
+  }
+
+  const marketText = marketLines.join(" / ").trim();
+  return {
+    league,
+    teams,
+    marketText,
+    rawOdds: parseRawOdds(marketText || text)
+  };
+}
+
+function extractFeedbackSignal(text) {
+  const rawText = String(text || "").trim();
+  if (!rawText) return null;
+
+  const lines = splitTextLines(rawText);
+  const normalizedText = rawText.replace(/\s+/g, " ");
+  const candidates = [];
+
+  lines.forEach((line, lineIndex) => {
+    const matches = [
+      ...line.matchAll(/(^|[^\d.])((?:0|1)\.\d{1,3})(?:\s*(拿|收|了))?(?=$|[^\d])/g)
+    ];
+
+    matches.forEach((match, matchIndex) => {
+      const price = match[2];
+      const suffix = match[3] || "";
+      const priceValue = Number(price);
+      if (!(priceValue > 0 && priceValue < 2)) return;
+
+      let score = 10 + lineIndex + matchIndex;
+      if (suffix) score += 4;
+      if (/^((?:0|1)\.\d{1,3})(?:\s*(拿|收|了))?$/.test(line)) score += 7;
+      if (lines.length === 1) score += 3;
+      if (normalizedText.length <= 12) score += 2;
+      if (/[改回上收拿了]/.test(line)) score += 1;
+      if (/[＠@/]/.test(line)) score -= 7;
+      if (/联赛|滚球|让球|大小|角球|波胆|单双|盘口|预备|回执|回单|确\d|单号|金额/.test(line)) score -= 6;
+      if (/\bv\b|\bvs\b/i.test(line)) score -= 5;
+      if (lines.length >= 3 && /[＠@]/.test(normalizedText)) score -= 6;
+
+      candidates.push({
+        text: `${price}${suffix}`,
+        price,
+        score,
+        lineIndex,
+        matchIndex
+      });
+    });
+  });
+
+  candidates.sort((left, right) => {
+    if (right.score !== left.score) return right.score - left.score;
+    if (right.lineIndex !== left.lineIndex) return right.lineIndex - left.lineIndex;
+    return right.matchIndex - left.matchIndex;
+  });
+
+  return candidates[0] && candidates[0].score >= 7 ? candidates[0] : null;
+}
+
+function isStructuredMarketText(text) {
+  return Boolean(text) && (/[＠@]/.test(text) || /滚球|让球|大小|角球|波胆|单双|盘口|独赢/.test(text));
+}
+
+function analyzeSourceMessage(text) {
+  const parsed = parseSourceMessage(text);
+  const lines = splitTextLines(text);
+  const isStructuredTicket = Boolean(
+    lines.length >= 3 &&
+      parsed.league &&
+      parsed.teams &&
+      parsed.marketText &&
+      isStructuredMarketText(parsed.marketText)
+  );
+
+  return {
+    lines,
+    parsed,
+    isStructuredTicket,
+    feedbackSignal: isStructuredTicket ? null : extractFeedbackSignal(text)
+  };
+}
+
+function buildTicketDraftFromSourceText(text, baseTicket = {}) {
+  const sourceAnalysis = analyzeSourceMessage(text);
+  if (!sourceAnalysis.isStructuredTicket) return null;
+
+  return normalizeTicketDraft({
+    sourceChannelId: baseTicket.sourceChannelId || "",
+    league: sourceAnalysis.parsed.league,
+    teams: sourceAnalysis.parsed.teams,
+    marketText: sourceAnalysis.parsed.marketText,
+    rawOdds: Number(sourceAnalysis.parsed.rawOdds || 0),
+    rebate: Number(baseTicket.rebate || 0),
+    deliveryTarget: Number(baseTicket.deliveryTarget || 0)
+  });
+}
+
+function normalizeTicketDraft(ticket = {}) {
+  return {
+    sourceChannelId: ticket.sourceChannelId || "",
+    league: String(ticket.league || "").trim(),
+    teams: String(ticket.teams || "").trim(),
+    marketText: String(ticket.marketText || "").trim(),
+    rawOdds: Number(ticket.rawOdds || 0),
+    rebate: Number(ticket.rebate || 0),
+    deliveryTarget: Number(ticket.deliveryTarget || 0)
+  };
+}
+
+function hasStableTicketShape(ticket) {
+  return Boolean(ticket?.league && ticket?.teams && ticket?.marketText);
+}
+
+function rememberStableTicket(ticket) {
+  const normalized = normalizeTicketDraft(ticket);
+  if (!hasStableTicketShape(normalized)) return;
+  state.lastStableTicket = normalized;
+  saveJson(storageKeys.stableTicket, normalized);
+}
+
+function findLatestStructuredTicketFromLogs(logs, baseTicket) {
+  for (const log of logs || []) {
+    if (!/收到 .*消息:/.test(log.message || "")) continue;
+    const messageText = String(log.message).split("消息:").slice(1).join("消息:").trim();
+    if (!messageText) continue;
+
+    const draft = buildTicketDraftFromSourceText(messageText, baseTicket);
+    if (draft && hasStableTicketShape(draft)) {
+      return draft;
+    }
+  }
+
+  return null;
+}
+
+function getProtectedConsoleTicket(ticket, sourceAnalysis, logs) {
+  const normalized = normalizeTicketDraft(ticket);
+  if (hasStableTicketShape(normalized)) {
+    rememberStableTicket(normalized);
+    return normalized;
+  }
+
+  if (sourceAnalysis?.isStructuredTicket) {
+    return normalized;
+  }
+
+  const fallbackTicket = state.lastStableTicket || findLatestStructuredTicketFromLogs(logs, normalized);
+  if (!fallbackTicket) {
+    return normalized;
+  }
+
+  rememberStableTicket(fallbackTicket);
+
+  return {
+    ...normalized,
+    league: fallbackTicket.league,
+    teams: fallbackTicket.teams,
+    marketText: fallbackTicket.marketText,
+    rawOdds: fallbackTicket.rawOdds || normalized.rawOdds,
+    rebate: normalized.rebate || fallbackTicket.rebate,
+    deliveryTarget: normalized.deliveryTarget || fallbackTicket.deliveryTarget
+  };
+}
+
+function syncMarketOddsFromInput() {
+  const rawOdds = parseRawOdds(els.inpMarket.value);
+  if (rawOdds) {
+    els.oddsRaw.value = rawOdds;
+  }
+}
+
+function formatSourceChannelLabel(channel) {
+  const prefix = channel.type === "whatsapp" ? "WA" : channel.type === "telegram" ? "TG" : "";
+  const base = prefix ? `[${prefix}] ${channel.label}` : channel.label;
+  if (!channel.note || channel.note === channel.label) {
+    return base;
+  }
+  return `${base} · ${channel.note}`;
+}
+
+function quickReplyValue(label) {
+  const match = String(label).match(/^([^\s(]+)/);
+  return match?.[1] || String(label).trim();
+}
+
+function formatRecentChatLabel(chat) {
+  const prefix = chat.platform === "whatsapp" ? "WA" : "TG";
+  const title = chat.title || chat.label || chat.remoteId;
+  const type = chat.type ? `[${chat.type}]` : "";
+  return `[${prefix}] ${title} ${type}`.trim();
+}
+
+function deriveCommandTone(command) {
+  const text = `${command.label} ${command.text}`;
+  if (/取消|停止|撤单/.test(text)) return "danger";
+  if (/等等|暂停|恢复|继续/.test(text)) return "warning";
+  return "";
+}
+
+function saveResourceCurrencies() {
+  saveJson(storageKeys.resourceCurrencies, state.resourceCurrencies);
+}
+
+function saveCustomCommands() {
+  saveJson(storageKeys.customCommands, state.customCommands);
+}
+
+function renderQuickReplies() {
+  els.quickReplyContainer.innerHTML = supplierQuickReplies
+    .map((reply) => `<button class="btn" data-quick-reply="${escapeHtml(reply)}">${escapeHtml(reply)}</button>`)
+    .join("");
+}
+
+function renderCustomCommands() {
+  if (!state.customCommands.length) {
+    els.customCommandContainer.innerHTML =
+      "<div class='ops-note' style='grid-column: span 6;'>暂无快捷指令，请点击右上角管理按钮新增。</div>";
+    return;
+  }
+
+  els.customCommandContainer.innerHTML = state.customCommands
+    .map((command) => {
+      const tone = deriveCommandTone(command);
+      return `
+        <button class="command-btn${tone ? ` ${tone}` : ""}" data-command-id="${escapeHtml(command.id)}" title="${escapeHtml(command.text)}">
+          ${escapeHtml(command.label)}
+        </button>
+      `;
+    })
+    .join("");
+}
+
+function renderCommandEditor() {
+  els.commandEditorList.innerHTML = state.customCommands
+    .map(
+      (command) => `
+        <div class="command-editor-row" data-command-editor-id="${escapeHtml(command.id)}">
+          <div class="form-item" style="margin-bottom: 0;">
+            <label>按钮标题</label>
+            <input class="command-editor-label" value="${escapeHtml(command.label)}" placeholder="例如：等等">
+          </div>
+          <div class="form-item" style="margin-bottom: 0;">
+            <label>发送文本</label>
+            <input class="command-editor-text" value="${escapeHtml(command.text)}" placeholder="例如：等等 / 先暂停">
+          </div>
+          <button class="icon-btn" data-command-editor-delete="true">删除</button>
+        </div>
+      `
+    )
+    .join("");
+}
+
+function openCommandModal() {
+  renderCommandEditor();
+  els.commandModal.classList.add("open");
+}
+
+function closeCommandModal() {
+  els.commandModal.classList.remove("open");
 }
 
 function getSourceChannelById(sourceChannelId) {
@@ -210,27 +685,147 @@ function getSelectedRecentChat() {
   return state.recentChats.find((item) => `${item.platform}::${item.remoteId}` === state.selectedRecentChatKey) || null;
 }
 
-function quickReplyValue(label) {
-  const match = String(label).match(/^([^\s(]+)/);
-  return match?.[1] || String(label).trim();
+function getResourceCurrency(resourceId) {
+  return state.resourceCurrencies[resourceId] || "U";
 }
 
-function formatRecentChatLabel(chat) {
-  const prefix = chat.platform === "whatsapp" ? "WA" : "TG";
-  const title = chat.title || chat.label || chat.remoteId;
-  const type = chat.type ? `[${chat.type}]` : "";
-  return `[${prefix}] ${title} ${type}`.trim();
+function toUsd(amount, currency) {
+  const numericAmount = Number(amount || 0);
+  if (currency === "RMB") {
+    return numericAmount / getExchangeRateValue();
+  }
+  return numericAmount;
 }
 
-function renderQuickReplies() {
-  els.quickReplyContainer.innerHTML = quickReplies
-    .map((reply, index) => {
-      const tone =
-        reply.includes("取消") ? " danger" : index === quickReplies.length - 1 ? " primary" : "";
-      const spanStyle = quickReplies.length % 2 === 1 && index === quickReplies.length - 1 ? "grid-column: span 2;" : "";
-      return `<button class="btn${tone}" data-quick-reply="${escapeHtml(reply)}" style="${spanStyle}">${escapeHtml(reply)}</button>`;
-    })
-    .join("");
+function updateResourceRowState(row) {
+  const sendInput = row.querySelector(".resource-send");
+  const amountInput = row.querySelector(".resource-amount");
+  const enabled = Boolean(sendInput?.checked);
+  row.classList.toggle("disabled", !enabled);
+  if (amountInput) {
+    amountInput.disabled = !enabled;
+  }
+}
+
+function collectResourcePatch(row) {
+  return {
+    name: row.querySelector(".resource-name")?.value.trim() || "",
+    remoteId: row.querySelector(".resource-bind")?.value.trim() || "",
+    sendEnabled: Boolean(row.querySelector(".resource-send")?.checked),
+    canAmericas: Boolean(row.querySelector(".resource-americas")?.checked),
+    amount: Number(row.querySelector(".resource-amount")?.value || 0),
+    slipCount: Number(row.querySelector(".resource-slip")?.value || 0),
+    allocationType: row.querySelector(".resource-type")?.value || "fixed"
+  };
+}
+
+function applyAmericasConstraints() {
+  const americasOrder = isAmericasOrder();
+
+  document.querySelectorAll(".rc-row").forEach((row) => {
+    const sendInput = row.querySelector(".resource-send");
+    const canAmericasInput = row.querySelector(".resource-americas");
+    if (!sendInput || !canAmericasInput) return;
+
+    if (americasOrder && !canAmericasInput.checked && sendInput.checked) {
+      sendInput.checked = false;
+      const resourceId = row.dataset.resourceId;
+      if (resourceId) {
+        scheduleResourceSync(resourceId, collectResourcePatch(row));
+      }
+    }
+
+    updateResourceRowState(row);
+  });
+}
+
+function renderTargetHint(effectiveTarget, allocated, gap) {
+  if (isAmericasOrder()) {
+    els.targetHintText.textContent = `特殊赛额度 + 跟注额 = ${formatMoney(effectiveTarget)} USD，缺口 ${formatMoney(gap)} USD`;
+  } else {
+    els.targetHintText.textContent = `常规赛额度 + 跟注额 = ${formatMoney(effectiveTarget)} USD，已分配 ${formatMoney(allocated)} USD`;
+  }
+}
+
+function syncReceiptOddsFromCalculated(force = false) {
+  const calculatedOdds = formatMoney(Number(els.oddsFinal.value || 0));
+  const currentReceiptOdds = String(els.recOdds.value || "").trim();
+  if (force || !state.receiptOddsManual || !currentReceiptOdds) {
+    els.recOdds.value = calculatedOdds;
+  }
+}
+
+function updateReceiptOddsManualState() {
+  const currentReceiptOdds = String(els.recOdds.value || "").trim();
+  const calculatedOdds = formatMoney(Number(els.oddsFinal.value || 0));
+  state.receiptOddsManual = Boolean(currentReceiptOdds && currentReceiptOdds !== calculatedOdds);
+}
+
+function normalizeReceiptOddsInput() {
+  const rawValue = String(els.recOdds.value || "").trim();
+  if (!rawValue) {
+    state.receiptOddsManual = false;
+    syncReceiptOddsFromCalculated(true);
+    return;
+  }
+
+  const normalized = rawValue.replace(/[^\d.]/g, "");
+  const parsed = Number(normalized);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    state.receiptOddsManual = false;
+    syncReceiptOddsFromCalculated(true);
+    return;
+  }
+
+  els.recOdds.value = formatMoney(parsed);
+  updateReceiptOddsManualState();
+}
+
+function calculateLocal() {
+  applyAmericasConstraints();
+
+  const raw = Number(els.oddsRaw.value || 0);
+  const rebate = Number(els.oddsRebate.value || 0);
+  const finalOdds = Math.max(raw - rebate, 0);
+  els.oddsFinal.value = formatMoney(finalOdds);
+  syncReceiptOddsFromCalculated();
+
+  let allocated = 0;
+  document.querySelectorAll(".rc-row").forEach((row) => {
+    if (!row.querySelector(".resource-send")?.checked) return;
+    const amount = Number(row.querySelector(".resource-amount")?.value || 0);
+    const currency = row.querySelector(".resource-currency")?.value || "U";
+    allocated += toUsd(amount, currency);
+  });
+
+  const regularTarget = Math.max(Number(els.targetTotal.value || 0), 0);
+  const specialTarget = getSpecialTargetValue();
+  const followAmount = getFollowAmountValue();
+  const effectiveTarget = isAmericasOrder()
+    ? Math.max(specialTarget + followAmount, 0)
+    : Math.max(regularTarget + followAmount, 0);
+  const gap = Math.max(effectiveTarget - allocated, 0);
+
+  els.targetAllocated.value = formatMoney(allocated);
+  els.effectiveTarget.value = formatMoney(effectiveTarget);
+  els.targetGap.value = formatMoney(gap);
+  els.sumConfirmed.textContent = `已分配: ${formatMoney(allocated)}U`;
+  els.gapBox.className = gap > 0 ? "data-box gap-alert" : "data-box";
+  els.gapBox.style.background = gap > 0 ? "" : "#f0f9eb";
+  els.gapBox.style.borderColor = gap > 0 ? "" : "#e1f3d8";
+  renderTargetHint(effectiveTarget, allocated, gap);
+
+  updateReceiptText();
+}
+
+function updateReceiptText() {
+  const count = els.recCount.value;
+  const league = els.inpLeague.value;
+  const team = els.inpTeam.value;
+  const marketClean = els.inpMarket.value.split("@")[0].trim();
+  const finalOdds = String(els.recOdds.value || els.oddsFinal.value || "").trim();
+  const amt = els.recAmt.value;
+  els.recText.value = `${count}.${league}\n${team}\n${marketClean} @ ${finalOdds}确${amt}`;
 }
 
 function renderSourceChannels(snapshot) {
@@ -242,7 +837,7 @@ function renderSourceChannels(snapshot) {
 
   const optionHtml = channels.length
     ? channels
-        .map((channel) => `<option value="${channel.id}">${escapeHtml(channel.label)}${channel.note ? ` · ${escapeHtml(channel.note)}` : ""}</option>`)
+        .map((channel) => `<option value="${channel.id}">${escapeHtml(formatSourceChannelLabel(channel))}</option>`)
         .join("")
     : "<option value=''>暂无供应商</option>";
 
@@ -252,13 +847,18 @@ function renderSourceChannels(snapshot) {
   els.sourceChannelSelect.value = state.selectedSourceId || "";
 
   const selected = channels.find((item) => item.id === state.selectedSourceId) || null;
-  setBadge(els.sourceOnlineBadge, selected?.online ? "在线" : channels.length ? "离线" : "未绑定", selected?.online ? "blue" : selected ? "red" : "");
+  setBadge(
+    els.sourceOnlineBadge,
+    selected?.online ? "在线" : channels.length ? "离线" : "未绑定",
+    selected?.online ? "blue" : selected ? "red" : ""
+  );
   els.sourceDeleteBtn.disabled = !selected;
 }
 
 function renderResources(resources) {
   if (!resources.length) {
-    els.resourceContainer.innerHTML = "<div class='ops-note'>暂无分销商绑定，请先在左侧“发现与绑定”中新增。</div>";
+    els.resourceContainer.innerHTML =
+      "<div class='ops-note'>暂无分销商绑定，请先在左侧“发现与绑定”中新增。</div>";
     els.recTarget.innerHTML = "<option value=''>暂无资源</option>";
     return;
   }
@@ -266,30 +866,47 @@ function renderResources(resources) {
   const html = resources
     .map((resource) => {
       const disabled = !resource.sendEnabled;
+      const currency = getResourceCurrency(resource.id);
       return `
         <div class="rc-row${disabled ? " disabled" : ""}" data-resource-id="${resource.id}">
           <div class="rc-id">
             <input class="name resource-name" value="${escapeHtml(resource.name || "")}">
-            <input class="bind resource-bind" value="${escapeHtml(resource.remoteId || "")}" placeholder="${escapeHtml(resource.bindingLabel || "remoteId / jid")}" title="${escapeHtml(resource.note || resource.bindingLabel || "")}">
+            <input class="bind resource-bind" value="${escapeHtml(
+              resource.remoteId || ""
+            )}" placeholder="${escapeHtml(resource.bindingLabel || "remoteId / jid")}" title="${escapeHtml(
+              resource.note || resource.bindingLabel || ""
+            )}">
           </div>
           <div class="rc-chk">
-            <label><input type="checkbox" class="resource-send" ${resource.sendEnabled ? "checked" : ""}> 可发送</label>
-            <label><input type="checkbox" class="resource-americas" ${resource.canAmericas ? "checked" : ""}> 可美洲</label>
+            <label><input type="checkbox" class="resource-send" ${
+              resource.sendEnabled ? "checked" : ""
+            }> 可发送</label>
+            <label><input type="checkbox" class="resource-americas" ${
+              resource.canAmericas ? "checked" : ""
+            }> 可接美洲</label>
           </div>
           <div class="rc-amt">
-            <input type="number" class="resource-amount" value="${resource.amount ?? 0}" ${disabled ? "disabled" : ""}>
+            <input type="number" class="resource-amount" value="${resource.amount ?? 0}" ${
+              disabled ? "disabled" : ""
+            }>
+            <select class="resource-currency">
+              <option value="U" ${currency === "U" ? "selected" : ""}>U</option>
+              <option value="RMB" ${currency === "RMB" ? "selected" : ""}>RMB</option>
+            </select>
           </div>
           <div class="rc-cfg">
             <input type="number" class="resource-slip" value="${resource.slipCount ?? 0}">
             <select class="resource-type">
               <option value="fixed" ${resource.allocationType === "fixed" ? "selected" : ""}>固定</option>
-              <option value="floating" ${resource.allocationType === "floating" ? "selected" : ""}>浮动</option>
+              <option value="floating" ${
+                resource.allocationType === "floating" ? "selected" : ""
+              }>浮动</option>
             </select>
           </div>
           <div class="rc-btn">
+            <button data-resource-action="prep">预备</button>
             <button data-resource-action="market">盘口</button>
             <button data-resource-action="receipt">回执</button>
-            <button data-resource-action="prep">预备</button>
             <button data-resource-action="delete" class="delete">删</button>
           </div>
         </div>
@@ -298,7 +915,9 @@ function renderResources(resources) {
     .join("");
 
   els.resourceContainer.innerHTML = html;
-  els.recTarget.innerHTML = resources.map((resource) => `<option value="${resource.id}">${escapeHtml(resource.name)}</option>`).join("");
+  els.recTarget.innerHTML = resources
+    .map((resource) => `<option value="${resource.id}">${escapeHtml(resource.name)}</option>`)
+    .join("");
 
   if (!resources.some((item) => item.id === state.selectedReceiptResourceId)) {
     state.selectedReceiptResourceId = resources[0]?.id || "";
@@ -307,25 +926,59 @@ function renderResources(resources) {
     els.recTarget.value = state.selectedReceiptResourceId;
     loadReceiptResource(state.selectedReceiptResourceId);
   }
+
+  applyAmericasConstraints();
 }
 
 function renderRecentChats() {
   const platform = els.bindPlatformSelect.value;
-  const filtered = state.recentChats.filter((chat) => platform === "all" || chat.platform === platform);
-  setBadge(els.bindScopeBadge, `${filtered.length} 个会话`, "blue");
+  const searchQuery = String(els.bindSearchInput?.value || "")
+    .trim()
+    .toLowerCase();
+  const platformScoped = state.recentChats.filter(
+    (chat) => platform === "all" || chat.platform === platform
+  );
+  const filtered = platformScoped.filter((chat) => {
+    if (!searchQuery) return true;
+    const haystack = [
+      chat.title,
+      chat.label,
+      chat.remoteId,
+      chat.platform,
+      chat.type,
+      formatRecentChatLabel(chat)
+    ]
+      .filter(Boolean)
+      .join(" ")
+      .toLowerCase();
+    return haystack.includes(searchQuery);
+  });
+  setBadge(
+    els.bindScopeBadge,
+    searchQuery ? `${filtered.length} / ${platformScoped.length} 个会话` : `${filtered.length} 个会话`,
+    "blue"
+  );
 
   const optionHtml = filtered.length
     ? filtered
         .map((chat) => {
           const key = `${chat.platform}::${chat.remoteId}`;
-          return `<option value="${escapeHtml(key)}">${escapeHtml(formatRecentChatLabel(chat))}</option>`;
+          return `<option value="${escapeHtml(key)}">${escapeHtml(
+            formatRecentChatLabel(chat)
+          )}</option>`;
         })
         .join("")
-    : "<option value=''>暂无最近会话</option>";
+    : `<option value=''>${searchQuery ? "未找到匹配会话" : "暂无最近会话"}</option>`;
 
   els.bindDiscoverySelect.innerHTML = optionHtml;
-  if (!filtered.some((chat) => `${chat.platform}::${chat.remoteId}` === state.selectedRecentChatKey)) {
-    state.selectedRecentChatKey = filtered[0] ? `${filtered[0].platform}::${filtered[0].remoteId}` : "";
+  if (
+    !filtered.some(
+      (chat) => `${chat.platform}::${chat.remoteId}` === state.selectedRecentChatKey
+    )
+  ) {
+    state.selectedRecentChatKey = filtered[0]
+      ? `${filtered[0].platform}::${filtered[0].remoteId}`
+      : "";
   }
 
   if (state.selectedRecentChatKey) {
@@ -341,44 +994,119 @@ function renderRecentChats() {
       `平台: ${selected.platform}`,
       `会话: ${selected.title || selected.label || selected.remoteId}`,
       selected.lastMessageAt
-        ? `最近活动: ${new Date(selected.lastMessageAt).toLocaleString("zh-CN", { hour12: false })}`
+        ? `最近活动: ${new Date(selected.lastMessageAt).toLocaleString("zh-CN", {
+            hour12: false
+          })}`
         : "最近活动: 未知"
     ].join(" | ");
   } else {
-    els.bindMetaText.textContent = "先拉取最近会话，再选择身份并绑定。";
+    els.bindMetaText.textContent = searchQuery
+      ? "没有匹配结果，试试群名、联系人名、ID 或平台关键词。"
+      : "先拉取最近会话，再选择身份并绑定。";
   }
 }
 
-function renderAlert(snapshot) {
-  const hit = (snapshot.logs || []).find((log) => /收到 .*消息:.*?(\d+\.\d+)/.test(log.message));
-  const price = hit?.message?.match(/(\d+\.\d+)/)?.[1];
-  if (!price) {
-    els.alertText.textContent = "⚠️ 暂无掉水告警";
-    return;
+function renderFeedbackBox(box, textElement, buttonElement, options) {
+  const title = options.title;
+  const value = options.value || "--";
+  const idleText = options.idleText;
+  const actionText = options.actionText;
+  const hasValue = Boolean(options.value);
+
+  box.classList.toggle("empty", !hasValue);
+  textElement.innerHTML = `<span class="feedback-title">${escapeHtml(title)}</span><b>${escapeHtml(value)}</b>`;
+  buttonElement.disabled = !hasValue;
+  buttonElement.textContent = hasValue ? `${actionText} ${value}` : idleText;
+}
+
+function parseReceivedLogEntry(log) {
+  const message = String(log?.message || "");
+  const match = message.match(/^收到 (WhatsApp|Telegram UserBot) 消息:\s*([\s\S]+)$/);
+  if (!match) return null;
+
+  return {
+    platform: match[1] === "WhatsApp" ? "whatsapp" : "telegram",
+    text: match[2].trim()
+  };
+}
+
+function findLatestFeedbackPrice(logs, currentSource) {
+  let sourceEchoSkipped = false;
+
+  for (const log of logs || []) {
+    const entry = parseReceivedLogEntry(log);
+    if (!entry?.text) continue;
+
+    if (
+      !sourceEchoSkipped &&
+      currentSource?.text &&
+      currentSource?.platform &&
+      entry.platform === currentSource.platform &&
+      entry.text === currentSource.text
+    ) {
+      sourceEchoSkipped = true;
+      continue;
+    }
+
+    const signal = extractFeedbackSignal(entry.text);
+    if (!signal) continue;
+
+    return signal.text;
   }
 
-  els.alertText.innerHTML = `⚠️ 系统监听到价格反馈<br>当前水位 <b>${price}</b>`;
+  return "";
+}
+
+function renderSupplierFeedback(snapshot) {
+  const ticket = snapshot.currentTicket || {};
+  const sourceChannel = getSourceChannelById(ticket.sourceChannelId);
+  const price = findLatestFeedbackPrice(snapshot.logs, {
+    platform: sourceChannel?.type || "",
+    text: ticket.sourceMessage?.text || ""
+  });
+  state.latestFeedbackPrice = price;
+
+  renderFeedbackBox(els.supplierFeedbackBox, els.supplierFeedbackText, els.supplierFeedbackBtn, {
+    title: "下游反馈",
+    value: price,
+    actionText: "向供应商反馈",
+    idleText: "等待下游反馈"
+  });
+}
+
+function renderResourceReprice(sourceAnalysis) {
+  const repriceText = sourceAnalysis?.feedbackSignal?.text || "";
+  state.latestSupplierRepriceText = repriceText;
+
+  renderFeedbackBox(els.resourceRepriceBox, els.resourceRepriceText, els.resourceRepriceBtn, {
+    title: "源头反馈",
+    value: repriceText,
+    actionText: "向资源同步",
+    idleText: "等待源头反馈"
+  });
 }
 
 async function extractSourceMessageToConsole({ toast = true } = {}) {
   const text = state.snapshot?.currentTicket?.sourceMessage?.text || "";
-  const lines = text
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean);
+  const sourceAnalysis = analyzeSourceMessage(text);
+  const parsed = sourceAnalysis.parsed;
 
-  if (!lines.length) {
-    notify("当前没有可提取的供应商消息", "red", toast);
+  if (!sourceAnalysis.isStructuredTicket) {
+    if (toast) {
+      notify("当前消息更像反馈/聊天，已保留上一张有效单，不覆盖中控台", "red", true);
+    }
     return;
   }
 
-  const league = lines[0] || "";
-  const teams = lines[1] || "";
-  const marketText = lines.slice(2).join(" / ");
-
-  els.inpLeague.value = league;
-  els.inpTeam.value = teams;
-  els.inpMarket.value = marketText;
+  els.inpLeague.value = parsed.league;
+  els.inpTeam.value = parsed.teams;
+  els.inpMarket.value = parsed.marketText;
+  if (parsed.rawOdds) {
+    els.oddsRaw.value = parsed.rawOdds;
+  } else {
+    syncMarketOddsFromInput();
+  }
+  rememberStableTicket(currentTicketPatch());
   calculateLocal();
 
   try {
@@ -392,25 +1120,34 @@ async function extractSourceMessageToConsole({ toast = true } = {}) {
   }
 }
 
+function renderPersistentControls() {
+  els.exchangeRate.value = formatMoney(state.exchangeRate);
+  els.specialTarget.value = formatMoney(state.specialTarget);
+  els.followAmount.value = formatMoney(state.followAmount);
+  els.americasOrderCheckbox.checked = state.manualAmericas;
+}
+
 function renderSnapshot(snapshot) {
   const previousFingerprint = state.lastSourceFingerprint;
   state.snapshot = snapshot;
+  const ticket = snapshot.currentTicket || {};
+  const sourceAnalysis = analyzeSourceMessage(ticket.sourceMessage?.text || "");
+  const displayTicket = getProtectedConsoleTicket(ticket, sourceAnalysis, snapshot.logs || []);
+  renderPersistentControls();
   renderSourceChannels(snapshot);
   renderResources(snapshot.resources || []);
-  renderAlert(snapshot);
+  renderSupplierFeedback(snapshot);
+  renderResourceReprice(sourceAnalysis);
 
-  const ticket = snapshot.currentTicket || {};
   setBadge(els.ticketIdBadge, `单号 ${ticket.id || "--"}`);
-  els.inpLeague.value = ticket.league || "";
-  els.inpTeam.value = ticket.teams || "";
-  els.inpMarket.value = ticket.marketText || "";
-  els.oddsRaw.value = ticket.rawOdds ?? 0;
-  els.oddsRebate.value = ticket.rebate ?? 0;
-  els.targetTotal.value = ticket.deliveryTarget ?? 0;
-  els.targetAllocated.value = ticket.allocated ?? 0;
-  els.targetGap.value = ticket.gap ?? 0;
-  els.oddsFinal.value = Number(ticket.finalOdds || 0).toFixed(2);
-  els.recOdds.value = Number(ticket.finalOdds || 0).toFixed(2);
+  els.inpLeague.value = displayTicket.league || "";
+  els.inpTeam.value = displayTicket.teams || "";
+  els.inpMarket.value = displayTicket.marketText || "";
+  const snapshotRawOdds = Number(displayTicket.rawOdds || 0);
+  els.oddsRaw.value =
+    snapshotRawOdds > 0 ? String(displayTicket.rawOdds) : parseRawOdds(displayTicket.marketText || "") || "";
+  els.oddsRebate.value = displayTicket.rebate ?? 0;
+  els.targetTotal.value = displayTicket.deliveryTarget ?? 0;
 
   els.sourceArrivedAt.textContent = ticket.sourceMessage?.arrivedAt
     ? `${ticket.sourceMessage.arrivedAt} 收到下发`
@@ -419,8 +1156,10 @@ function renderSnapshot(snapshot) {
 
   calculateLocal();
 
-  const sourceFingerprint = `${ticket.sourceChannelId || ""}|${ticket.sourceMessage?.arrivedAt || ""}|${ticket.sourceMessage?.text || ""}`;
-  if (ticket.sourceMessage?.text && sourceFingerprint !== previousFingerprint) {
+  const sourceFingerprint = `${ticket.sourceChannelId || ""}|${ticket.sourceMessage?.arrivedAt || ""}|${
+    ticket.sourceMessage?.text || ""
+  }`;
+  if (sourceAnalysis.isStructuredTicket && ticket.sourceMessage?.text && sourceFingerprint !== previousFingerprint) {
     state.lastSourceFingerprint = sourceFingerprint;
     void extractSourceMessageToConsole({ toast: false });
   } else {
@@ -441,7 +1180,9 @@ function renderWhatsAppStatus(status) {
     els.waQrImage.hidden = true;
     els.waQrHint.hidden = false;
     els.waQrHint.textContent =
-      status.connection === "connecting" ? "登录窗口已启动，二维码会在网页或弹出的 Chrome 中出现" : "点击“取二维码”后在此显示";
+      status.connection === "connecting"
+        ? "登录窗口已启动，二维码会在网页或弹出的 Chrome 中出现"
+        : "点击“取二维码”后在此显示";
   }
 
   els.waPairCode.textContent = status.pairingCode || "配对码尚未生成";
@@ -501,6 +1242,7 @@ async function postResourcePatch(resourceId, patch) {
 
 const syncTicket = debounce(async () => {
   try {
+    rememberStableTicket(currentTicketPatch());
     await api("/api/ticket/current", {
       method: "PATCH",
       body: currentTicketPatch()
@@ -530,20 +1272,27 @@ function loadReceiptResource(resourceId) {
   els.recTarget.value = resourceId;
   els.recAmt.value = resource.amount ?? 0;
   els.recCount.value = Number(resource.slipCount || 0) + 1;
+  syncReceiptOddsFromCalculated();
   updateReceiptText();
 }
 
 function buildSummaryText() {
   const ticket = currentTicketPatch();
-  const resources = Array.from(document.querySelectorAll(".rc-row")).map((row) => ({
-    name: row.querySelector(".resource-name")?.value || "",
-    enabled: row.querySelector(".resource-send")?.checked,
-    amount: Number(row.querySelector(".resource-amount")?.value || 0),
-    remoteId: row.querySelector(".resource-bind")?.value || ""
-  }));
+  const resources = Array.from(document.querySelectorAll(".rc-row")).map((row) => {
+    const amount = Number(row.querySelector(".resource-amount")?.value || 0);
+    const currency = row.querySelector(".resource-currency")?.value || "U";
+    return {
+      name: row.querySelector(".resource-name")?.value || "",
+      enabled: Boolean(row.querySelector(".resource-send")?.checked),
+      amount,
+      currency,
+      usdAmount: toUsd(amount, currency),
+      remoteId: row.querySelector(".resource-bind")?.value || ""
+    };
+  });
 
   const enabledResources = resources.filter((item) => item.enabled);
-  const total = enabledResources.reduce((sum, item) => sum + item.amount, 0);
+  const total = enabledResources.reduce((sum, item) => sum + item.usdAmount, 0);
 
   return [
     `单号: ${state.snapshot?.currentTicket?.id || "--"}`,
@@ -551,10 +1300,15 @@ function buildSummaryText() {
     `品牌: ${ticket.teams}`,
     `报价: ${ticket.marketText}`,
     `回执水位: ${els.oddsFinal.value}`,
-    `总目标: ${ticket.deliveryTarget}`,
-    `已分配: ${total}`,
+    `总目标: ${formatMoney(Number(els.effectiveTarget.value || 0))}U`,
+    `已分配: ${formatMoney(total)}U`,
     "分销商明细:",
-    ...enabledResources.map((item) => `- ${item.name} | ${item.amount}U | ${item.remoteId || "未绑定"}`)
+    ...enabledResources.map(
+      (item) =>
+        `- ${item.name} | ${item.amount}${item.currency} | 折合 ${formatMoney(item.usdAmount)}U | ${
+          item.remoteId || "未绑定"
+        }`
+    )
   ].join("\n");
 }
 
@@ -563,17 +1317,78 @@ async function copyText(text, successText) {
   notify(successText, "blue", true);
 }
 
+async function sendBroadcastCustom(text, successText) {
+  await api("/api/actions/broadcast-custom", {
+    method: "POST",
+    body: { text }
+  });
+  notify(successText, "blue", true);
+}
+
+async function sendPrepBroadcast() {
+  const league = els.inpLeague.value.trim();
+  const teams = els.inpTeam.value.trim();
+  if (!league || !teams) {
+    notify("预备单至少需要品类和品牌两行内容", "red", true);
+    return;
+  }
+
+  await sendBroadcastCustom(`${league}\n${teams}`, "已发送预备单");
+}
+
 function bindCoreInputs() {
-  [els.inpLeague, els.inpTeam, els.inpMarket, els.oddsRaw, els.oddsRebate, els.targetTotal].forEach((element) => {
-    element.addEventListener("input", () => {
-      calculateLocal();
-      syncTicket();
-    });
+  [els.inpLeague, els.inpTeam, els.oddsRaw, els.oddsRebate, els.targetTotal].forEach(
+    (element) => {
+      element.addEventListener("input", () => {
+        calculateLocal();
+        syncTicket();
+      });
+    }
+  );
+
+  els.inpMarket.addEventListener("input", () => {
+    syncMarketOddsFromInput();
+    calculateLocal();
+    syncTicket();
   });
 
-  [els.recTarget, els.recAmt, els.recCount].forEach((element) => {
+  els.exchangeRate.addEventListener("input", () => {
+    state.exchangeRate = getExchangeRateValue();
+    saveNumber(storageKeys.exchangeRate, state.exchangeRate);
+    calculateLocal();
+  });
+
+  els.specialTarget.addEventListener("input", () => {
+    state.specialTarget = getSpecialTargetValue();
+    saveNumber(storageKeys.specialTarget, state.specialTarget);
+    calculateLocal();
+  });
+
+  els.followAmount.addEventListener("input", () => {
+    state.followAmount = getFollowAmountValue();
+    saveNumber(storageKeys.followAmount, state.followAmount);
+    calculateLocal();
+  });
+
+  els.americasOrderCheckbox.addEventListener("change", () => {
+    state.manualAmericas = els.americasOrderCheckbox.checked;
+    saveBoolean(storageKeys.manualAmericas, state.manualAmericas);
+    calculateLocal();
+  });
+
+  [els.recTarget, els.recAmt, els.recCount, els.recOdds].forEach((element) => {
     element.addEventListener("input", updateReceiptText);
     element.addEventListener("change", updateReceiptText);
+  });
+
+  els.recOdds.addEventListener("input", () => {
+    updateReceiptOddsManualState();
+    updateReceiptText();
+  });
+
+  els.recOdds.addEventListener("blur", () => {
+    normalizeReceiptOddsInput();
+    updateReceiptText();
   });
 
   els.sourceChannelSelect.addEventListener("change", () => {
@@ -591,6 +1406,36 @@ function bindCoreInputs() {
         body: { text: quickReplyValue(button.dataset.quickReply) }
       });
       notify(`已回复供应商: ${button.dataset.quickReply}`, "blue", true);
+    } catch (error) {
+      notify(error.message, "red", true);
+    }
+  });
+
+  els.supplierFeedbackBtn.addEventListener("click", async () => {
+    if (!state.latestFeedbackPrice) {
+      notify("当前没有可反馈的价格", "red", true);
+      return;
+    }
+
+    try {
+      await api("/api/actions/source-reply", {
+        method: "POST",
+        body: { text: state.latestFeedbackPrice }
+      });
+      notify(`已反馈供应商 ${state.latestFeedbackPrice}`, "blue", true);
+    } catch (error) {
+      notify(error.message, "red", true);
+    }
+  });
+
+  els.resourceRepriceBtn.addEventListener("click", async () => {
+    if (!state.latestSupplierRepriceText) {
+      notify("当前没有可同步给资源的复水文本", "red", true);
+      return;
+    }
+
+    try {
+      await sendBroadcastCustom(state.latestSupplierRepriceText, `已同步资源 ${state.latestSupplierRepriceText}`);
     } catch (error) {
       notify(error.message, "red", true);
     }
@@ -615,30 +1460,34 @@ function bindCoreInputs() {
     }
   });
 
-  document.querySelectorAll("[data-broadcast-action]").forEach((card) => {
-    card.addEventListener("click", async () => {
-      try {
-        const action = card.dataset.broadcastAction;
-        await api(`/api/actions/broadcast-${action}`, { method: "POST" });
-        notify(`已发送${action === "prep" ? "预备报价单" : "报价"}`, "blue", true);
-      } catch (error) {
-        notify(error.message, "red", true);
-      }
-    });
+  els.corePrepBtn.addEventListener("click", async () => {
+    try {
+      await sendPrepBroadcast();
+    } catch (error) {
+      notify(error.message, "red", true);
+    }
   });
 
-  document.querySelectorAll("[data-broadcast-custom]").forEach((card) => {
-    card.addEventListener("click", async () => {
-      try {
-        await api("/api/actions/broadcast-custom", {
-          method: "POST",
-          body: { text: card.dataset.broadcastCustom }
-        });
-        notify(`已广播: ${card.dataset.broadcastCustom}`, "blue", true);
-      } catch (error) {
-        notify(error.message, "red", true);
-      }
-    });
+  els.coreMarketBtn.addEventListener("click", async () => {
+    try {
+      await api("/api/actions/broadcast-market", { method: "POST" });
+      notify("已发送报价", "blue", true);
+    } catch (error) {
+      notify(error.message, "red", true);
+    }
+  });
+
+  els.customCommandContainer.addEventListener("click", async (event) => {
+    const button = event.target.closest("button[data-command-id]");
+    if (!button) return;
+    const command = state.customCommands.find((item) => item.id === button.dataset.commandId);
+    if (!command) return;
+
+    try {
+      await sendBroadcastCustom(command.text, `已发送快捷指令: ${command.label}`);
+    } catch (error) {
+      notify(error.message, "red", true);
+    }
   });
 }
 
@@ -648,22 +1497,20 @@ function bindResourceEvents() {
     if (!row) return;
 
     const resourceId = row.dataset.resourceId;
-    if (event.target.matches(".resource-send")) {
-      const amountInput = row.querySelector(".resource-amount");
-      const disabled = !event.target.checked;
-      row.classList.toggle("disabled", disabled);
-      amountInput.disabled = disabled;
+    if (!resourceId) return;
+
+    if (event.target.matches(".resource-currency")) {
+      state.resourceCurrencies[resourceId] = event.target.value;
+      saveResourceCurrencies();
+      calculateLocal();
+      return;
     }
 
-    scheduleResourceSync(resourceId, {
-      name: row.querySelector(".resource-name").value.trim(),
-      remoteId: row.querySelector(".resource-bind").value.trim(),
-      sendEnabled: row.querySelector(".resource-send").checked,
-      canAmericas: row.querySelector(".resource-americas").checked,
-      amount: Number(row.querySelector(".resource-amount").value || 0),
-      slipCount: Number(row.querySelector(".resource-slip").value || 0),
-      allocationType: row.querySelector(".resource-type").value
-    });
+    if (event.target.matches(".resource-send") || event.target.matches(".resource-americas")) {
+      updateResourceRowState(row);
+    }
+
+    scheduleResourceSync(resourceId, collectResourcePatch(row));
     calculateLocal();
   });
 
@@ -672,16 +1519,12 @@ function bindResourceEvents() {
     if (!row) return;
 
     const resourceId = row.dataset.resourceId;
-    scheduleResourceSync(resourceId, {
-      name: row.querySelector(".resource-name").value.trim(),
-      remoteId: row.querySelector(".resource-bind").value.trim(),
-      sendEnabled: row.querySelector(".resource-send").checked,
-      canAmericas: row.querySelector(".resource-americas").checked,
-      amount: Number(row.querySelector(".resource-amount").value || 0),
-      slipCount: Number(row.querySelector(".resource-slip").value || 0),
-      allocationType: row.querySelector(".resource-type").value
-    });
-    calculateLocal();
+    if (!resourceId) return;
+
+    if (event.target.matches(".resource-name, .resource-bind, .resource-amount, .resource-slip")) {
+      scheduleResourceSync(resourceId, collectResourcePatch(row));
+      calculateLocal();
+    }
   });
 
   els.resourceContainer.addEventListener("click", async (event) => {
@@ -717,8 +1560,63 @@ function bindResourceEvents() {
   });
 }
 
+function bindCommandEditorEvents() {
+  els.commandManageBtn.addEventListener("click", openCommandModal);
+  els.commandModalCloseBtn.addEventListener("click", closeCommandModal);
+  els.commandModal.addEventListener("click", (event) => {
+    if (event.target === els.commandModal) {
+      closeCommandModal();
+    }
+  });
+
+  els.commandAddBtn.addEventListener("click", () => {
+    state.customCommands.push({
+      id: makeId(),
+      label: `指令 ${state.customCommands.length + 1}`,
+      text: ""
+    });
+    renderCommandEditor();
+  });
+
+  els.commandEditorList.addEventListener("click", (event) => {
+    const deleteButton = event.target.closest("button[data-command-editor-delete]");
+    if (!deleteButton) return;
+    const row = deleteButton.closest("[data-command-editor-id]");
+    if (!row) return;
+    state.customCommands = state.customCommands.filter(
+      (command) => command.id !== row.dataset.commandEditorId
+    );
+    renderCommandEditor();
+  });
+
+  els.commandSaveBtn.addEventListener("click", () => {
+    const rows = Array.from(els.commandEditorList.querySelectorAll("[data-command-editor-id]"));
+    const nextCommands = rows
+      .map((row, index) =>
+        normalizeCommand(
+          {
+            id: row.dataset.commandEditorId,
+            label: row.querySelector(".command-editor-label")?.value.trim(),
+            text: row.querySelector(".command-editor-text")?.value.trim()
+          },
+          index
+        )
+      )
+      .filter((command) => command.text);
+
+    state.customCommands = nextCommands.length
+      ? nextCommands
+      : defaultCustomCommands.map((item, index) => normalizeCommand(item, index));
+    saveCustomCommands();
+    renderCustomCommands();
+    closeCommandModal();
+    notify("快捷指令已保存", "blue", true);
+  });
+}
+
 function bindDiscoveryEvents() {
   els.bindPlatformSelect.addEventListener("change", renderRecentChats);
+  els.bindSearchInput.addEventListener("input", renderRecentChats);
 
   els.bindDiscoverySelect.addEventListener("change", () => {
     state.selectedRecentChatKey = els.bindDiscoverySelect.value;
@@ -757,7 +1655,11 @@ function bindDiscoveryEvents() {
         state.selectedSourceId = created.id;
       }
       els.bindNoteInput.value = "";
-      notify(`已绑定为${els.bindRoleSelect.value === "supplier" ? "供应商" : "分销商"}`, "blue", true);
+      notify(
+        `已绑定为${els.bindRoleSelect.value === "supplier" ? "供应商" : "分销商"}`,
+        "blue",
+        true
+      );
     } catch (error) {
       notify(error.message, "red", true);
     }
@@ -877,6 +1779,7 @@ function bindReceiptEvents() {
       await api(`/api/actions/resources/${resourceId}/receipt`, {
         method: "POST",
         body: {
+          text: els.recText.value,
           amount: Number(els.recAmt.value || 0),
           slipCount: Math.max(Number(els.recCount.value || 1) - 1, 0)
         }
@@ -902,30 +1805,15 @@ function bindReceiptEvents() {
       notify(error.message, "red", true);
     }
   });
-
-  els.alertActionBtn.addEventListener("click", async () => {
-    const priceMatch = els.alertText.textContent.match(/(\d+\.\d+)/);
-    if (!priceMatch) {
-      notify("当前没有可回传的掉水价格", "red", true);
-      return;
-    }
-
-    try {
-      await api("/api/actions/source-reply", {
-        method: "POST",
-        body: { text: priceMatch[1] }
-      });
-      notify(`已反馈供应商 ${priceMatch[1]}`, "blue", true);
-    } catch (error) {
-      notify(error.message, "red", true);
-    }
-  });
 }
 
 async function init() {
+  renderPersistentControls();
   renderQuickReplies();
+  renderCustomCommands();
   bindCoreInputs();
   bindResourceEvents();
+  bindCommandEditorEvents();
   bindDiscoveryEvents();
   bindIntegrationEvents();
   bindReceiptEvents();

@@ -306,9 +306,14 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
       } else if (kind === "market") {
         text = store.getSnapshot().currentTicket.marketText;
       } else if (kind === "receipt") {
-        const receipt = store.buildReceipt(resourceId, req.body?.amount, req.body?.slipCount);
-        if (!receipt) return fail(res, "Resource not found.", 404);
-        text = receipt.text;
+        const customText = String(req.body?.text || "").trim();
+        if (customText) {
+          text = customText;
+        } else {
+          const receipt = store.buildReceipt(resourceId, req.body?.amount, req.body?.slipCount);
+          if (!receipt) return fail(res, "Resource not found.", 404);
+          text = receipt.text;
+        }
       } else {
         return fail(res, "Unsupported kind.", 400);
       }

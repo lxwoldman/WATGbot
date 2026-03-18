@@ -14,6 +14,7 @@
       --text: #303133;
       --text-muted: #909399;
       --blue: #409eff;
+      --blue-hover: #2f87ea;
       --blue-light: #ecf5ff;
       --green: #67c23a;
       --amber: #e6a23c;
@@ -37,7 +38,7 @@
 
     .layout {
       display: grid;
-      grid-template-columns: 260px minmax(400px, 1fr) 520px;
+      grid-template-columns: 280px minmax(320px, 1fr) 560px;
       gap: 10px;
       height: 100%;
     }
@@ -64,7 +65,7 @@
     }
 
     .panel-bd {
-      padding: 12px;
+      padding: 10px;
       flex: 1;
       overflow-y: auto;
       display: flex;
@@ -87,13 +88,13 @@
     }
     input:focus, select:focus, textarea:focus { border-color: var(--blue); }
     
-    .form-item { margin-bottom: 10px; }
+    .form-item { margin-bottom: 8px; }
     .form-item label { display: block; margin-bottom: 4px; color: var(--text-muted); font-size: 11px; }
 
     /* ======== 左侧：源头区 ======== */
     .chat-box {
-      background: #f8f9fa; padding: 10px; border-radius: 4px; border: 1px solid var(--line);
-      margin-bottom: 12px;
+      background: #f8f9fa; padding: 8px; border-radius: 4px; border: 1px solid var(--line);
+      margin-bottom: 10px;
     }
     .chat-head {
       display: flex;
@@ -215,60 +216,203 @@
       background: #fff;
     }
     
-    .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;}
+    .btn-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin-bottom: 8px;}
     .btn {
       padding: 8px; border-radius: 4px; border: 1px solid var(--line-strong); background: #fff;
       cursor: pointer; font-size: 12px; font-weight: bold; color: var(--text); text-align: center;
     }
     .btn:hover { color: var(--blue); border-color: var(--blue); background: var(--blue-light); }
+    .btn:disabled {
+      cursor: not-allowed;
+      color: #b7bfcc;
+      border-color: #d8dee8;
+      background: #f7f8fb;
+      box-shadow: none;
+    }
     .btn.primary { background: var(--blue); color: #fff; border-color: var(--blue); }
     .btn.primary:hover { background: var(--blue-hover); }
     .btn.danger { background: var(--red); color: #fff; border-color: var(--red); }
-
-    /* 智能掉水拦截卡片 */
-    .alert-card {
-      margin-top: auto; padding: 10px; border: 1px solid #fbc4c4; border-radius: 4px;
-      background: var(--red-light);
+    .btn.primary:disabled,
+    .btn.danger:disabled {
+      color: #b7bfcc;
+      border-color: #d8dee8;
+      background: #f7f8fb;
     }
-    .alert-text { font-size: 11px; color: var(--red); margin-bottom: 8px; line-height: 1.4;}
-    .alert-text b { font-size: 14px; background: #fff; padding: 0 4px; border-radius: 2px; border: 1px solid #fbc4c4;}
+
+    .feedback-box {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px;
+      border: 1px solid #fbc4c4;
+      border-radius: 4px;
+      background: var(--red-light);
+      margin-bottom: 10px;
+    }
+    .feedback-box.empty {
+      border-style: dashed;
+      background: #fffafa;
+      opacity: 0.85;
+    }
+    .feedback-meta {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      font-size: 11px;
+      color: var(--red);
+      line-height: 1.5;
+    }
+    .feedback-title {
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+    .feedback-meta b {
+      align-self: flex-start;
+      font-size: 14px;
+      background: #fff;
+      padding: 0 6px;
+      border-radius: 2px;
+      border: 1px solid #fbc4c4;
+    }
+    .feedback-box.blue {
+      border-color: #b3d8ff;
+      background: var(--blue-light);
+    }
+    .feedback-box.blue .feedback-meta {
+      color: var(--blue);
+    }
+    .feedback-box.blue .feedback-meta b {
+      border-color: #b3d8ff;
+    }
 
     /* ======== 中间：控制台 ======== */
     .big-input { font-size: 14px; font-weight: bold; padding: 8px; }
     
     .data-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+    .data-grid.four { grid-template-columns: 1fr 1fr 0.9fr 0.8fr; }
     .data-box { border: 1px solid var(--line); border-radius: 4px; padding: 8px; background: #fafafa; }
     .data-box label { font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px; }
     .data-box input { border: none; border-bottom: 1px solid var(--line-strong); background: transparent; padding: 2px 0; font-weight: bold; font-size: 14px; border-radius: 0; }
+    .data-box select { border: none; border-bottom: 1px solid var(--line-strong); background: transparent; padding: 2px 0; font-weight: bold; font-size: 14px; border-radius: 0; }
+    .toggle-box {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      min-height: 100%;
+    }
+    .toggle-box input {
+      width: auto;
+      margin: 0;
+    }
+    .target-hint {
+      margin-top: -2px;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .target-hint .inline-toggle {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      font-weight: bold;
+      color: var(--text);
+    }
+    .target-hint .inline-toggle input {
+      width: auto;
+      margin: 0;
+    }
     
     .gap-alert { border-color: var(--red); background: var(--red-light); }
     .gap-alert label, .gap-alert input { color: var(--red); }
 
-    .action-grid {
-      display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
-      margin-top: auto; padding-top: 12px; border-top: 1px dashed var(--line);
+    .core-action-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 8px;
+      padding-top: 10px;
+      border-top: 1px dashed var(--line);
+      margin-bottom: 8px;
     }
-    .btn-act {
-      display: flex; flex-direction: column; align-items: center; padding: 8px 4px;
-      border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; cursor: pointer;
+    .core-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 48px;
+      padding: 8px;
     }
-    .btn-act strong { font-size: 12px; margin-bottom: 2px; color: var(--text); }
-    .btn-act span { font-size: 10px; color: var(--text-muted); }
-    .btn-act:hover { border-color: var(--blue); background: var(--blue-light); }
-    .btn-act.warning { background: #fdf6ec; border-color: #f5dab1; }
-    .btn-act.warning strong { color: var(--amber); }
-    .btn-act.danger { background: var(--red-light); border-color: #fbc4c4; }
-    .btn-act.danger strong { color: var(--red); }
+    .command-box {
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #fafafa;
+      padding: 8px;
+      margin-bottom: 8px;
+    }
+    .command-box-hd {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 6px;
+      font-weight: bold;
+      font-size: 12px;
+    }
+    .command-grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .command-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 40px;
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
+      background: #fff;
+      cursor: pointer;
+      font-weight: bold;
+      font-size: 12px;
+      text-align: center;
+      padding: 6px 4px;
+      color: var(--text);
+    }
+    .command-btn:hover {
+      border-color: var(--blue);
+      background: var(--blue-light);
+      color: var(--blue);
+    }
+    .command-btn.warning {
+      background: #fdf6ec;
+      border-color: #f5dab1;
+      color: var(--amber);
+    }
+    .command-btn.danger {
+      background: var(--red-light);
+      border-color: #fbc4c4;
+      color: var(--red);
+    }
+    .utility-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
 
     /* ======== 右侧：资源区 (完美消除空白) ======== */
-    /* 修改比例：100px名字 | 65px开关 | 1fr(自适应填满剩余空间)拉长额度框 | 75px配置 | 115px按钮 */
     .rc-header {
-      display: grid; grid-template-columns: 100px 65px 1fr 75px 115px; gap: 6px;
+      display: grid; grid-template-columns: 118px 70px minmax(108px, 1fr) 74px 108px; gap: 6px;
       font-size: 11px; color: var(--text-muted); font-weight: bold; margin-bottom: 6px; text-align: center;
     }
     
     .rc-row {
-      display: grid; grid-template-columns: 100px 65px 1fr 75px 115px; gap: 6px;
+      display: grid; grid-template-columns: 118px 70px minmax(108px, 1fr) 74px 108px; gap: 6px;
       align-items: center; border: 1px solid var(--line); border-radius: 4px;
       padding: 4px 6px; margin-bottom: 4px; background: #fff;
     }
@@ -284,17 +428,34 @@
     .rc-chk label { display: flex; align-items: center; gap: 2px; cursor: pointer;}
     .rc-chk input { margin: 0; width: auto; }
 
-    /* 列3：额度 (已被1fr拉长) */
+    .rc-amt {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 56px;
+      gap: 4px;
+      align-items: center;
+    }
     .rc-amt input { text-align: center; font-weight: bold; padding: 6px 4px; border-color: var(--blue); color: var(--blue); width: 100%;}
+    .rc-amt select {
+      padding: 6px 4px;
+      text-align: center;
+      font-size: 11px;
+      font-weight: bold;
+      border-color: var(--line-strong);
+      background: #fff;
+    }
 
-    /* 列4：条数和类型 */
     .rc-cfg { display: flex; flex-direction: column; gap: 2px; }
     .rc-cfg input, .rc-cfg select { padding: 2px; font-size: 11px; text-align: center;}
 
-    /* 列5：按钮组 (恢复双字) */
-    .rc-btn { display: flex; gap: 4px; justify-content: center;}
+    .rc-btn {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 4px;
+    }
     .rc-btn button { 
-      padding: 5px 6px; font-size: 11px; background: #fff; border: 1px solid var(--line-strong); 
+      width: 100%;
+      min-width: 0;
+      padding: 4px 2px; font-size: 11px; background: #fff; border: 1px solid var(--line-strong); 
       border-radius: 2px; cursor: pointer; color: var(--text); white-space: nowrap;
     }
     .rc-btn button:hover { border-color: var(--blue); color: var(--blue); background: var(--blue-light);}
@@ -309,7 +470,7 @@
 
     /* ======== 回执生成器 ======== */
     .receipt-box {
-      margin-top: auto; padding: 10px; border: 1px solid var(--line); border-radius: 4px; background: #fafafa;
+      margin-top: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 4px; background: #fafafa;
     }
     .receipt-box-hd { font-weight: bold; color: var(--blue); font-size: 12px; margin-bottom: 8px; display: flex; align-items: center; gap: 4px;}
     .receipt-grid { display: grid; grid-template-columns: 1.2fr 1fr 0.8fr 1fr; gap: 6px; margin-bottom: 8px;}
@@ -344,6 +505,65 @@
     }
     .toast.blue { background: rgba(64, 158, 255, 0.96); }
     .toast.red { background: rgba(245, 108, 108, 0.96); }
+    .modal-mask {
+      position: fixed;
+      inset: 0;
+      background: rgba(15, 23, 42, 0.38);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      padding: 20px;
+    }
+    .modal-mask.open {
+      display: flex;
+    }
+    .modal-card {
+      width: min(720px, 100%);
+      max-height: 82vh;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      background: #fff;
+      border-radius: 12px;
+      border: 1px solid var(--line);
+      box-shadow: 0 18px 50px rgba(15, 23, 42, 0.2);
+    }
+    .modal-hd {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+      font-weight: bold;
+    }
+    .modal-bd {
+      padding: 14px 16px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .command-editor-row {
+      display: grid;
+      grid-template-columns: 140px minmax(0, 1fr) 56px;
+      gap: 8px;
+      align-items: end;
+    }
+    .modal-ft {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 16px;
+      border-top: 1px solid var(--line);
+      background: #fafafa;
+    }
+    .modal-ft .actions {
+      display: flex;
+      gap: 8px;
+    }
   </style>
 </head>
 <body>
@@ -376,6 +596,16 @@
       <div class="form-item">
         <label>快速回复源头</label>
         <div class="btn-grid" id="quickReplyContainer"></div>
+      </div>
+
+      <div class="feedback-box" id="supplierFeedbackBox">
+        <div class="feedback-meta" id="supplierFeedbackText">下游反馈价格</div>
+        <button class="btn danger" id="supplierFeedbackBtn" style="width: auto; min-width: 132px;">向供应商反馈</button>
+      </div>
+
+      <div class="feedback-box blue" id="resourceRepriceBox">
+        <div class="feedback-meta" id="resourceRepriceText">源头复水</div>
+        <button class="btn primary" id="resourceRepriceBtn" style="width: auto; min-width: 132px;">向资源同步</button>
       </div>
 
       <div class="ops-box">
@@ -467,6 +697,10 @@
           <label>最近发现的会话</label>
           <select id="bindDiscoverySelect" class="ops-list" size="6"></select>
         </div>
+        <div class="form-item" style="margin-bottom: 8px;">
+          <label>搜索会话</label>
+          <input id="bindSearchInput" placeholder="输入群名 / 联系人 / ID / 平台关键词">
+        </div>
         <div class="ops-grid single">
           <div class="form-item" style="margin-bottom: 8px;">
             <label>自定义备注名</label>
@@ -474,14 +708,6 @@
           </div>
         </div>
         <div class="ops-meta" id="bindMetaText">先拉取最近会话，再选择身份并绑定。</div>
-      </div>
-
-      <!-- 智能掉水拦截 -->
-      <div class="alert-card" id="alertCard">
-        <div class="alert-text" id="alertText">
-          ⚠️ 暂无掉水告警
-        </div>
-        <button class="btn danger" id="alertActionBtn" style="width: 100%; border-radius: 2px;">一键反馈源头</button>
       </div>
 
     </div>
@@ -504,7 +730,7 @@
         <input type="text" class="big-input" id="inpTeam" value="江原 v 安阳">
       </div>
       <div class="form-item">
-        <label>盘口与原始水位</label>
+        <label>盘口文本</label>
         <input type="text" class="big-input" id="inpMarket" value="小 2 / 2.5 @ 0.90" style="color: var(--blue);">
       </div>
 
@@ -524,32 +750,63 @@
         </div>
       </div>
 
-      <div class="data-grid">
+      <div class="data-grid four">
         <div class="data-box">
-          <label>总交货目标 (U)</label>
+          <label>常规赛额度 (U)</label>
           <input type="number" id="targetTotal" value="15000">
         </div>
         <div class="data-box">
-          <label>已分配额度 (U)</label>
-          <input type="number" id="targetAllocated" value="0" readonly>
+          <label>特殊赛额度 (U)</label>
+          <input type="number" id="specialTarget" value="20000">
         </div>
-        <div class="data-box gap-alert" id="gapBox">
-          <label>未分配缺口 (U)</label>
-          <input type="number" id="targetGap" value="0" readonly>
+        <div class="data-box">
+          <label>跟注额 (U)</label>
+          <input type="number" id="followAmount" value="5000">
+        </div>
+        <div class="data-box">
+          <label>当前汇率</label>
+          <input type="number" step="0.01" id="exchangeRate" value="7.00">
         </div>
       </div>
 
-      <!-- 快捷操作矩阵 -->
-      <div class="action-grid">
-        <div class="btn-act" data-broadcast-action="prep"><strong>发预备单</strong><span>不带金额</span></div>
-        <div class="btn-act" data-broadcast-action="market"><strong>发盘口</strong><span>按资源过滤</span></div>
-        <div class="btn-act warning" data-broadcast-custom="等等 / 先暂停"><strong>发等等</strong><span>先暂停</span></div>
-        <div class="btn-act warning" data-broadcast-custom="继续打 / 恢复"><strong>发继续打</strong><span>恢复</span></div>
-        
-        <div class="btn-act danger" data-broadcast-custom="取消 / 整单取消"><strong>发取消</strong><span>整单取消</span></div>
-        <div class="btn-act" id="copyMarketBtn"><strong>复制盘口</strong><span>手工备用</span></div>
-        <div class="btn-act" data-broadcast-custom="请尽快回执当前单"><strong>一键催单</strong><span>催未回资源</span></div>
-        <div class="btn-act" id="buildSummaryBtn"><strong>生成汇总</strong><span>内部记录</span></div>
+      <div class="target-hint">
+        <div class="inline-toggle">
+          <input type="checkbox" id="americasOrderCheckbox">
+          <span>美洲订单</span>
+        </div>
+        <span id="targetHintText">常规赛额度 + 跟注额</span>
+      </div>
+
+      <div class="data-grid">
+        <div class="data-box">
+          <label>已分配额度 (USD)</label>
+          <input type="number" id="targetAllocated" value="0" readonly>
+        </div>
+        <div class="data-box">
+          <label>生效目标 (USD)</label>
+          <input type="number" id="effectiveTarget" value="0" readonly>
+        </div>
+        <div class="data-box gap-alert" id="gapBox">
+          <label>未分配缺口 (USD)</label>
+          <input type="number" id="targetGap" value="0" readonly>
+        </div>
+      </div>
+      <div class="core-action-row">
+        <button class="btn primary core-btn" id="corePrepBtn">发预备单</button>
+        <button class="btn primary core-btn" id="coreMarketBtn">发报价</button>
+      </div>
+
+      <div class="command-box">
+        <div class="command-box-hd">
+          <span>快捷指令</span>
+          <button class="btn" id="commandManageBtn" style="width: auto; padding: 6px 10px;">⚙️ 管理/编辑</button>
+        </div>
+        <div class="command-grid" id="customCommandContainer"></div>
+      </div>
+
+      <div class="utility-grid">
+        <button class="btn" id="copyMarketBtn">复制报价</button>
+        <button class="btn" id="buildSummaryBtn">生成汇总</button>
       </div>
 
     </div>
@@ -566,7 +823,7 @@
       <div class="rc-header">
         <div>资源绑定</div>
         <div>条件</div>
-        <div>实际交货</div>
+        <div>交货额度</div>
         <div>条/类</div>
         <div>单点</div>
       </div>
@@ -683,7 +940,7 @@
           </div>
           <div>
             <label>最终水位</label>
-            <input type="text" id="recOdds" value="0.87" readonly style="color: var(--blue);">
+            <input type="text" id="recOdds" value="0.87" style="color: var(--blue);">
           </div>
         </div>
         <textarea class="receipt-area" id="recText" readonly></textarea>
@@ -699,6 +956,23 @@
 </div>
 
 <div class="toast-stack" id="toastStack"></div>
+
+<div class="modal-mask" id="commandModal">
+  <div class="modal-card">
+    <div class="modal-hd">
+      <span>快捷指令管理</span>
+      <button class="icon-btn" id="commandModalCloseBtn">关闭</button>
+    </div>
+    <div class="modal-bd" id="commandEditorList"></div>
+    <div class="modal-ft">
+      <div class="ops-note">新增、修改、删除后点击保存，当前配置只保存在浏览器本地。</div>
+      <div class="actions">
+        <button class="btn" id="commandAddBtn">新增指令</button>
+        <button class="btn primary" id="commandSaveBtn">保存配置</button>
+      </div>
+    </div>
+  </div>
+</div>
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="/app-client.js"></script>
