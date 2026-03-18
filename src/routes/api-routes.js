@@ -13,6 +13,19 @@ function maybeEmit(getIo, store) {
 export function createApiRouter({ store, routerService, getIo, whatsappAdapter, telegramAdapter }) {
   const router = express.Router();
 
+  async function buildRecentChats(limit = 80) {
+    const [whatsappChats, telegramDialogs] = await Promise.all([
+      Promise.resolve(whatsappAdapter.listChats(limit)),
+      telegramAdapter.listDialogs(limit)
+    ]);
+
+    return [...whatsappChats, ...telegramDialogs].sort((left, right) => {
+      const leftTs = left.lastMessageAt ? Date.parse(left.lastMessageAt) : 0;
+      const rightTs = right.lastMessageAt ? Date.parse(right.lastMessageAt) : 0;
+      return rightTs - leftTs;
+    });
+  }
+
   async function buildWhatsAppStatus() {
     const status = whatsappAdapter.getStatus();
     return {
@@ -39,6 +52,15 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
 
   router.get("/bootstrap", (req, res) => {
     ok(res, store.getSnapshot());
+  });
+
+  router.get("/discovery/recent-chats", async (req, res) => {
+    try {
+      const limit = Number(req.query.limit) || 80;
+      ok(res, await buildRecentChats(limit));
+    } catch (error) {
+      fail(res, error.message, 500);
+    }
   });
 
   router.get("/integrations/whatsapp/status", (req, res) => {
@@ -152,6 +174,66 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
     }
     maybeEmit(getIo, store);
     ok(res, updated);
+  });
+
+  router.post("/bindings", (req, res) => {
+    try {
+      const role = String(req.body?.role || "").trim();
+      const platform = String(req.body?.platform || "").trim();
+      const remoteId = String(req.body?.remoteId || "").trim();
+      const note = String(req.body?.note || "").trim();
+      const title = String(req.body?.title || "").trim();
+
+      if (!["supplier", "distributor"].includes(role)) {
+        return fail(res, "role must be supplier or distributor.", 400);
+      }
+
+      if (!["whatsapp", "telegram"].includes(platform)) {
+        return fail(res, "platform must be whatsapp or telegram.", 400);
+      }
+
+      if (!remoteId) {
+        return fail(res, "remoteId is required.", 400);
+      }
+
+      const created =
+        role === "supplier"
+          ? store.upsertSourceChannelFromChat({
+              type: platform,
+              remoteId,
+              label: note || title || remoteId,
+              note
+            })
+          : store.upsertResourceFromChat({
+              platform,
+              remoteId,
+              name: note || title || remoteId,
+              note
+            });
+
+      maybeEmit(getIo, store);
+      ok(res, created);
+    } catch (error) {
+      fail(res, error.message, 500);
+    }
+  });
+
+  router.delete("/source-channels/:sourceChannelId", (req, res) => {
+    const removed = store.removeSourceChannel(req.params.sourceChannelId);
+    if (!removed) {
+      return fail(res, "Source channel not found.", 404);
+    }
+    maybeEmit(getIo, store);
+    ok(res, removed);
+  });
+
+  router.delete("/resources/:resourceId", (req, res) => {
+    const removed = store.removeResource(req.params.resourceId);
+    if (!removed) {
+      return fail(res, "Resource not found.", 404);
+    }
+    maybeEmit(getIo, store);
+    ok(res, removed);
   });
 
   router.post("/actions/source-reply", async (req, res) => {

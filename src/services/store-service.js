@@ -14,6 +14,15 @@ function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function slugify(value, fallbackPrefix) {
+  const normalized = String(value || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return normalized || `${fallbackPrefix}-${crypto.randomUUID().slice(0, 8)}`;
+}
+
 export class StoreService {
   constructor(config = {}) {
     this.config = {
@@ -124,6 +133,92 @@ export class StoreService {
     Object.assign(sourceChannel, patch);
     this.appendLog(`更新源头通道: ${sourceChannel.label}`);
     return clone(sourceChannel);
+  }
+
+  upsertSourceChannelFromChat({ type, remoteId, label, note = "" }) {
+    const normalizedRemoteId = String(remoteId || "").trim();
+    const existing = this.state.sourceChannels.find(
+      (item) => item.type === type && String(item.remoteId || "") === normalizedRemoteId
+    );
+
+    if (existing) {
+      existing.label = label || existing.label;
+      existing.note = note;
+      existing.remoteId = normalizedRemoteId;
+      this.appendLog(`更新供应商绑定: ${existing.label}`);
+      return clone(existing);
+    }
+
+    const created = {
+      id: `source-${slugify(label || normalizedRemoteId, "source")}`,
+      type,
+      label: label || normalizedRemoteId,
+      remoteId: normalizedRemoteId,
+      online: false,
+      note
+    };
+
+    this.state.sourceChannels.push(created);
+    if (!this.state.currentTicket.sourceChannelId) {
+      this.state.currentTicket.sourceChannelId = created.id;
+    }
+    this.appendLog(`新增供应商绑定: ${created.label}`);
+    return clone(created);
+  }
+
+  removeSourceChannel(sourceChannelId) {
+    const index = this.state.sourceChannels.findIndex((item) => item.id === sourceChannelId);
+    if (index < 0) return null;
+    const [removed] = this.state.sourceChannels.splice(index, 1);
+
+    if (this.state.currentTicket.sourceChannelId === sourceChannelId) {
+      this.state.currentTicket.sourceChannelId = this.state.sourceChannels[0]?.id || "";
+    }
+
+    this.appendLog(`移除供应商绑定: ${removed.label}`);
+    return clone(removed);
+  }
+
+  upsertResourceFromChat({ platform, remoteId, name, note = "" }) {
+    const normalizedRemoteId = String(remoteId || "").trim();
+    const existing = this.state.resources.find(
+      (item) => item.platform === platform && String(item.remoteId || "") === normalizedRemoteId
+    );
+
+    if (existing) {
+      existing.name = name || existing.name;
+      existing.bindingLabel = note || existing.bindingLabel || existing.name;
+      existing.note = note;
+      existing.remoteId = normalizedRemoteId;
+      this.appendLog(`更新分销商绑定: ${existing.name}`);
+      return clone(existing);
+    }
+
+    const created = {
+      id: `resource-${slugify(name || normalizedRemoteId, "resource")}`,
+      name: name || normalizedRemoteId,
+      bindingLabel: note || name || normalizedRemoteId,
+      platform,
+      remoteId: normalizedRemoteId,
+      sendEnabled: true,
+      canAmericas: true,
+      amount: 0,
+      slipCount: 1,
+      allocationType: "fixed",
+      note
+    };
+
+    this.state.resources.push(created);
+    this.appendLog(`新增分销商绑定: ${created.name}`);
+    return clone(created);
+  }
+
+  removeResource(resourceId) {
+    const index = this.state.resources.findIndex((item) => item.id === resourceId);
+    if (index < 0) return null;
+    const [removed] = this.state.resources.splice(index, 1);
+    this.appendLog(`移除分销商绑定: ${removed.name}`);
+    return clone(removed);
   }
 
   buildReceipt(resourceId, amountOverride, slipCountOverride) {

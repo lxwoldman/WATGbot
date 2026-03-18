@@ -95,7 +95,34 @@
       background: #f8f9fa; padding: 10px; border-radius: 4px; border: 1px solid var(--line);
       margin-bottom: 12px;
     }
+    .chat-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+    }
     .chat-text { font-size: 13px; font-weight: bold; line-height: 1.5; margin-top: 4px;}
+    .inline-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .icon-btn {
+      width: auto;
+      min-width: 32px;
+      padding: 6px 8px;
+      border: 1px solid #fbc4c4;
+      background: #fff5f5;
+      color: var(--red);
+      font-size: 11px;
+      border-radius: 4px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .icon-btn:hover {
+      background: var(--red-light);
+    }
 
     .ops-box {
       padding: 10px;
@@ -174,6 +201,9 @@
       display: grid;
       grid-template-columns: 1fr 1fr;
       gap: 6px;
+    }
+    .ops-grid.single {
+      grid-template-columns: 1fr;
     }
     .ops-list {
       width: 100%;
@@ -268,6 +298,14 @@
       border-radius: 2px; cursor: pointer; color: var(--text); white-space: nowrap;
     }
     .rc-btn button:hover { border-color: var(--blue); color: var(--blue); background: var(--blue-light);}
+    .rc-btn button.delete {
+      border-color: #fbc4c4;
+      color: var(--red);
+      background: #fff5f5;
+    }
+    .rc-btn button.delete:hover {
+      background: var(--red-light);
+    }
 
     /* ======== 回执生成器 ======== */
     .receipt-box {
@@ -283,6 +321,29 @@
       width: 100%; height: 85px; font-size: 12px; font-weight: bold; color: var(--blue);
       padding: 6px; border: 1px solid var(--blue-light); resize: none; margin-bottom: 8px;
     }
+    .toast-stack {
+      position: fixed;
+      right: 16px;
+      bottom: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 999;
+      pointer-events: none;
+    }
+    .toast {
+      min-width: 220px;
+      max-width: 320px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      background: rgba(48, 49, 51, 0.94);
+      color: #fff;
+      font-size: 12px;
+      line-height: 1.4;
+      box-shadow: 0 8px 24px rgba(0,0,0,0.16);
+    }
+    .toast.blue { background: rgba(64, 158, 255, 0.96); }
+    .toast.red { background: rgba(245, 108, 108, 0.96); }
   </style>
 </head>
 <body>
@@ -297,24 +358,24 @@
     </div>
     <div class="panel-bd">
       
-      <div class="form-item">
+      <div class="form-item inline-row">
         <select id="sourceChannelSelect" style="font-weight: bold; color: var(--blue); border-color: var(--blue);">
           <option>加载中...</option>
         </select>
+        <button class="icon-btn" id="sourceDeleteBtn" title="解绑当前供应商">删除</button>
       </div>
 
       <div class="chat-box">
-        <div id="sourceArrivedAt" style="font-size: 10px; color: var(--text-muted);">等待通道消息</div>
+        <div class="chat-head">
+          <div id="sourceArrivedAt" style="font-size: 10px; color: var(--text-muted);">等待通道消息</div>
+          <button class="btn" id="extractMessageBtn" style="width: auto; padding: 6px 10px;">提取到中控台</button>
+        </div>
         <div class="chat-text" id="sourceMessageText">尚未收到新消息</div>
       </div>
 
       <div class="form-item">
         <label>快速回复源头</label>
-        <div class="btn-grid">
-          <button class="btn" data-source-reply="0">0 (已阅)</button>
-          <button class="btn" data-source-reply="1">1 (就位)</button>
-          <button class="btn primary" data-source-reply="2" style="grid-column: span 2;">2 (出货完毕)</button>
-        </div>
+        <div class="btn-grid" id="quickReplyContainer"></div>
       </div>
 
       <div class="ops-box">
@@ -379,18 +440,20 @@
       <div class="ops-box">
         <div class="ops-box-hd">
           <span>发现与绑定</span>
-          <span class="badge blue" id="bindScopeBadge">最近会话</span>
+          <span class="badge blue" id="bindScopeBadge">0 个会话</span>
         </div>
         <div class="ops-grid">
           <div class="form-item">
-            <label>绑定目标</label>
-            <select id="bindTargetSelect">
-              <option>加载中...</option>
+            <label>绑定身份</label>
+            <select id="bindRoleSelect">
+              <option value="supplier">供应商</option>
+              <option value="distributor">分销商</option>
             </select>
           </div>
           <div class="form-item">
             <label>通道平台</label>
             <select id="bindPlatformSelect">
+              <option value="all">全部</option>
               <option value="whatsapp">WhatsApp</option>
               <option value="telegram">Telegram</option>
             </select>
@@ -398,17 +461,19 @@
         </div>
         <div class="ops-actions">
           <button class="btn" id="bindRefreshBtn">拉取最近会话</button>
-          <button class="btn primary" id="bindApplyBtn">保存绑定</button>
+          <button class="btn primary" id="bindApplyBtn">绑定</button>
         </div>
         <div class="form-item">
           <label>最近发现的会话</label>
           <select id="bindDiscoverySelect" class="ops-list" size="6"></select>
         </div>
-        <div class="form-item" style="margin-bottom: 8px;">
-          <label>remoteId / jid / chatId</label>
-          <input id="bindRemoteIdInput" placeholder="从上方选择，或手工粘贴">
+        <div class="ops-grid single">
+          <div class="form-item" style="margin-bottom: 8px;">
+            <label>自定义备注名</label>
+            <input id="bindNoteInput" placeholder="例如：海外供应商 Alpha / 分销商 1号">
+          </div>
         </div>
-        <div class="ops-meta" id="bindMetaText">先选择目标，再拉取最近会话。</div>
+        <div class="ops-meta" id="bindMetaText">先拉取最近会话，再选择身份并绑定。</div>
       </div>
 
       <!-- 智能掉水拦截 -->
@@ -632,6 +697,8 @@
   </div>
 
 </div>
+
+<div class="toast-stack" id="toastStack"></div>
 
 <script src="/socket.io/socket.io.js"></script>
 <script src="/app-client.js"></script>
