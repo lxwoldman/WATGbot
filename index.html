@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Broker Console Pro</title>
+  <link rel="icon" href="data:,">
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --line: #e4e7ed;
+      --line-strong: #dcdfe6;
+      --text: #303133;
+      --text-muted: #909399;
+      --blue: #409eff;
+      --blue-light: #ecf5ff;
+      --green: #67c23a;
+      --amber: #e6a23c;
+      --red: #f56c6c;
+      --red-light: #fef0f0;
+      --radius: 6px;
+      --font: "PingFang SC", "Helvetica Neue", Helvetica, "Hiragino Sans GB", "Microsoft YaHei", Arial, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0; padding: 10px;
+      height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 12px;
+      overflow: hidden;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 260px minmax(400px, 1fr) 520px;
+      gap: 10px;
+      height: 100%;
+    }
+
+    .panel {
+      background: var(--panel);
+      border-radius: var(--radius);
+      border: 1px solid var(--line);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.02);
+    }
+
+    .panel-hd {
+      padding: 10px 12px;
+      background: #fafafa;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-weight: bold;
+      font-size: 13px;
+    }
+
+    .panel-bd {
+      padding: 12px;
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* 徽章 */
+    .badge {
+      padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: normal;
+      background: #f4f4f5; color: #909399; border: 1px solid #e9e9eb;
+    }
+    .badge.blue { background: var(--blue-light); color: var(--blue); border-color: #b3d8ff; }
+    .badge.red { background: var(--red-light); color: var(--red); border-color: #fbc4c4; }
+
+    /* 表单基础 */
+    input, select, textarea {
+      width: 100%; padding: 6px 8px; border: 1px solid var(--line-strong);
+      border-radius: 4px; font-size: 12px; color: var(--text); outline: none;
+      transition: 0.2s;
+    }
+    input:focus, select:focus, textarea:focus { border-color: var(--blue); }
+    
+    .form-item { margin-bottom: 10px; }
+    .form-item label { display: block; margin-bottom: 4px; color: var(--text-muted); font-size: 11px; }
+
+    /* ======== 左侧：源头区 ======== */
+    .chat-box {
+      background: #f8f9fa; padding: 10px; border-radius: 4px; border: 1px solid var(--line);
+      margin-bottom: 12px;
+    }
+    .chat-text { font-size: 13px; font-weight: bold; line-height: 1.5; margin-top: 4px;}
+
+    .ops-box {
+      padding: 10px;
+      border: 1px solid var(--line);
+      border-radius: 4px;
+      background: #fafafa;
+      margin-bottom: 12px;
+    }
+    .ops-box-hd {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      font-weight: bold;
+      color: var(--text);
+      margin-bottom: 8px;
+    }
+    .ops-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 6px;
+      font-size: 11px;
+    }
+    .ops-actions {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      margin-bottom: 8px;
+    }
+    .ops-actions.three {
+      grid-template-columns: repeat(3, 1fr);
+    }
+    .ops-meta {
+      font-size: 10px;
+      color: var(--text-muted);
+      line-height: 1.5;
+      margin-bottom: 8px;
+      word-break: break-all;
+    }
+    .ops-qr {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 90px;
+      border: 1px dashed var(--line-strong);
+      border-radius: 4px;
+      background: #fff;
+      margin-bottom: 8px;
+      overflow: hidden;
+    }
+    .ops-qr img {
+      width: 160px;
+      height: 160px;
+      object-fit: contain;
+      display: block;
+    }
+    .ops-code {
+      padding: 6px 8px;
+      border-radius: 4px;
+      background: #fff;
+      border: 1px solid var(--line);
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      word-break: break-all;
+      margin-bottom: 8px;
+      min-height: 32px;
+    }
+    .ops-note {
+      font-size: 10px;
+      color: var(--text-muted);
+      line-height: 1.5;
+    }
+    .ops-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+    }
+    .ops-list {
+      width: 100%;
+      min-height: 128px;
+      padding: 6px;
+      border: 1px solid var(--line-strong);
+      border-radius: 4px;
+      font-size: 11px;
+      background: #fff;
+    }
+    
+    .btn-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 12px;}
+    .btn {
+      padding: 8px; border-radius: 4px; border: 1px solid var(--line-strong); background: #fff;
+      cursor: pointer; font-size: 12px; font-weight: bold; color: var(--text); text-align: center;
+    }
+    .btn:hover { color: var(--blue); border-color: var(--blue); background: var(--blue-light); }
+    .btn.primary { background: var(--blue); color: #fff; border-color: var(--blue); }
+    .btn.primary:hover { background: var(--blue-hover); }
+    .btn.danger { background: var(--red); color: #fff; border-color: var(--red); }
+
+    /* 智能掉水拦截卡片 */
+    .alert-card {
+      margin-top: auto; padding: 10px; border: 1px solid #fbc4c4; border-radius: 4px;
+      background: var(--red-light);
+    }
+    .alert-text { font-size: 11px; color: var(--red); margin-bottom: 8px; line-height: 1.4;}
+    .alert-text b { font-size: 14px; background: #fff; padding: 0 4px; border-radius: 2px; border: 1px solid #fbc4c4;}
+
+    /* ======== 中间：控制台 ======== */
+    .big-input { font-size: 14px; font-weight: bold; padding: 8px; }
+    
+    .data-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
+    .data-box { border: 1px solid var(--line); border-radius: 4px; padding: 8px; background: #fafafa; }
+    .data-box label { font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px; }
+    .data-box input { border: none; border-bottom: 1px solid var(--line-strong); background: transparent; padding: 2px 0; font-weight: bold; font-size: 14px; border-radius: 0; }
+    
+    .gap-alert { border-color: var(--red); background: var(--red-light); }
+    .gap-alert label, .gap-alert input { color: var(--red); }
+
+    .action-grid {
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px;
+      margin-top: auto; padding-top: 12px; border-top: 1px dashed var(--line);
+    }
+    .btn-act {
+      display: flex; flex-direction: column; align-items: center; padding: 8px 4px;
+      border: 1px solid var(--line-strong); border-radius: 4px; background: #fff; cursor: pointer;
+    }
+    .btn-act strong { font-size: 12px; margin-bottom: 2px; color: var(--text); }
+    .btn-act span { font-size: 10px; color: var(--text-muted); }
+    .btn-act:hover { border-color: var(--blue); background: var(--blue-light); }
+    .btn-act.warning { background: #fdf6ec; border-color: #f5dab1; }
+    .btn-act.warning strong { color: var(--amber); }
+    .btn-act.danger { background: var(--red-light); border-color: #fbc4c4; }
+    .btn-act.danger strong { color: var(--red); }
+
+    /* ======== 右侧：资源区 (完美消除空白) ======== */
+    /* 修改比例：100px名字 | 65px开关 | 1fr(自适应填满剩余空间)拉长额度框 | 75px配置 | 115px按钮 */
+    .rc-header {
+      display: grid; grid-template-columns: 100px 65px 1fr 75px 115px; gap: 6px;
+      font-size: 11px; color: var(--text-muted); font-weight: bold; margin-bottom: 6px; text-align: center;
+    }
+    
+    .rc-row {
+      display: grid; grid-template-columns: 100px 65px 1fr 75px 115px; gap: 6px;
+      align-items: center; border: 1px solid var(--line); border-radius: 4px;
+      padding: 4px 6px; margin-bottom: 4px; background: #fff;
+    }
+    .rc-row.disabled { opacity: 0.5; background: #f4f4f5; }
+    
+    /* 列1：名字与绑定 */
+    .rc-id { display: flex; flex-direction: column; gap: 2px; }
+    .rc-id input.name { font-weight: bold; border: none; padding: 0; font-size: 12px; background: transparent;}
+    .rc-id input.bind { font-size: 10px; color: var(--text-muted); padding: 2px; border: 1px solid var(--line); }
+    
+    /* 列2：勾选框 */
+    .rc-chk { display: flex; flex-direction: column; gap: 2px; font-size: 10px; }
+    .rc-chk label { display: flex; align-items: center; gap: 2px; cursor: pointer;}
+    .rc-chk input { margin: 0; width: auto; }
+
+    /* 列3：额度 (已被1fr拉长) */
+    .rc-amt input { text-align: center; font-weight: bold; padding: 6px 4px; border-color: var(--blue); color: var(--blue); width: 100%;}
+
+    /* 列4：条数和类型 */
+    .rc-cfg { display: flex; flex-direction: column; gap: 2px; }
+    .rc-cfg input, .rc-cfg select { padding: 2px; font-size: 11px; text-align: center;}
+
+    /* 列5：按钮组 (恢复双字) */
+    .rc-btn { display: flex; gap: 4px; justify-content: center;}
+    .rc-btn button { 
+      padding: 5px 6px; font-size: 11px; background: #fff; border: 1px solid var(--line-strong); 
+      border-radius: 2px; cursor: pointer; color: var(--text); white-space: nowrap;
+    }
+    .rc-btn button:hover { border-color: var(--blue); color: var(--blue); background: var(--blue-light);}
+
+    /* ======== 回执生成器 ======== */
+    .receipt-box {
+      margin-top: auto; padding: 10px; border: 1px solid var(--line); border-radius: 4px; background: #fafafa;
+    }
+    .receipt-box-hd { font-weight: bold; color: var(--blue); font-size: 12px; margin-bottom: 8px; display: flex; align-items: center; gap: 4px;}
+    .receipt-grid { display: grid; grid-template-columns: 1.2fr 1fr 0.8fr 1fr; gap: 6px; margin-bottom: 8px;}
+    .receipt-grid label { font-size: 10px; color: var(--text-muted); display: block; margin-bottom: 2px;}
+    .receipt-grid input, .receipt-grid select { padding: 4px; font-size: 11px; font-weight: bold;}
+    
+    /* 加高文本框，不再需要滚动 */
+    .receipt-area {
+      width: 100%; height: 85px; font-size: 12px; font-weight: bold; color: var(--blue);
+      padding: 6px; border: 1px solid var(--blue-light); resize: none; margin-bottom: 8px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="layout">
+  
+  <!-- ================= 左侧：源头区 ================= -->
+  <div class="panel">
+    <div class="panel-hd">
+      <span>📡 源头情报池</span>
+      <span class="badge" id="sourceOnlineBadge">离线</span>
+    </div>
+    <div class="panel-bd">
+      
+      <div class="form-item">
+        <select id="sourceChannelSelect" style="font-weight: bold; color: var(--blue); border-color: var(--blue);">
+          <option>加载中...</option>
+        </select>
+      </div>
+
+      <div class="chat-box">
+        <div id="sourceArrivedAt" style="font-size: 10px; color: var(--text-muted);">等待通道消息</div>
+        <div class="chat-text" id="sourceMessageText">尚未收到新消息</div>
+      </div>
+
+      <div class="form-item">
+        <label>快速回复源头</label>
+        <div class="btn-grid">
+          <button class="btn" data-source-reply="0">0 (已阅)</button>
+          <button class="btn" data-source-reply="1">1 (就位)</button>
+          <button class="btn primary" data-source-reply="2" style="grid-column: span 2;">2 (出货完毕)</button>
+        </div>
+      </div>
+
+      <div class="ops-box">
+        <div class="ops-box-hd">
+          <span>通道接管</span>
+          <span class="badge" id="opsGlobalBadge">待机</span>
+        </div>
+
+        <div class="ops-row">
+          <span>WhatsApp</span>
+          <span class="badge" id="waStatusBadge">待登录</span>
+        </div>
+        <div class="ops-actions three">
+          <button class="btn" id="waConnectQrBtn">取二维码</button>
+          <button class="btn" id="waPairBtn">取配对码</button>
+          <button class="btn" id="waReconnectBtn">重连</button>
+        </div>
+        <div class="form-item">
+          <label>WA 配对手机号</label>
+          <input id="waPairPhoneInput" placeholder="8613812345678">
+        </div>
+        <div class="ops-qr" id="waQrBox">
+          <span class="ops-note" id="waQrHint">点击“取二维码”后在此显示</span>
+          <img id="waQrImage" alt="WhatsApp QR" hidden>
+        </div>
+        <div class="ops-code" id="waPairCode">配对码尚未生成</div>
+        <div class="ops-actions">
+          <button class="btn danger" id="waLogoutBtn">登出 WA</button>
+          <button class="btn" id="waRefreshStatusBtn">刷新状态</button>
+        </div>
+        <div class="ops-meta" id="waMetaText">等待 WhatsApp 状态...</div>
+
+        <div class="ops-row" style="margin-top: 8px;">
+          <span>Telegram</span>
+          <span class="badge" id="tgStatusBadge">待配置</span>
+        </div>
+        <div class="form-item">
+          <label>TG 手机号</label>
+          <input id="tgPhoneInput" placeholder="+8613812345678">
+        </div>
+        <div class="ops-grid">
+          <div class="form-item">
+            <label>TG 验证码</label>
+            <input id="tgCodeInput" placeholder="12345">
+          </div>
+          <div class="form-item">
+            <label>TG 二次密码</label>
+            <input id="tgPasswordInput" type="password" placeholder="可留空">
+          </div>
+        </div>
+        <div class="ops-actions">
+          <button class="btn" id="tgRequestCodeBtn">发验证码</button>
+          <button class="btn primary" id="tgLoginBtn">完成登录</button>
+        </div>
+        <div class="ops-actions">
+          <button class="btn danger" id="tgLogoutBtn">登出 TG</button>
+          <button class="btn" id="tgRefreshStatusBtn">刷新状态</button>
+        </div>
+        <div class="ops-meta" id="tgMetaText">等待 Telegram 状态...</div>
+      </div>
+
+      <div class="ops-box">
+        <div class="ops-box-hd">
+          <span>发现与绑定</span>
+          <span class="badge blue" id="bindScopeBadge">最近会话</span>
+        </div>
+        <div class="ops-grid">
+          <div class="form-item">
+            <label>绑定目标</label>
+            <select id="bindTargetSelect">
+              <option>加载中...</option>
+            </select>
+          </div>
+          <div class="form-item">
+            <label>通道平台</label>
+            <select id="bindPlatformSelect">
+              <option value="whatsapp">WhatsApp</option>
+              <option value="telegram">Telegram</option>
+            </select>
+          </div>
+        </div>
+        <div class="ops-actions">
+          <button class="btn" id="bindRefreshBtn">拉取最近会话</button>
+          <button class="btn primary" id="bindApplyBtn">保存绑定</button>
+        </div>
+        <div class="form-item">
+          <label>最近发现的会话</label>
+          <select id="bindDiscoverySelect" class="ops-list" size="6"></select>
+        </div>
+        <div class="form-item" style="margin-bottom: 8px;">
+          <label>remoteId / jid / chatId</label>
+          <input id="bindRemoteIdInput" placeholder="从上方选择，或手工粘贴">
+        </div>
+        <div class="ops-meta" id="bindMetaText">先选择目标，再拉取最近会话。</div>
+      </div>
+
+      <!-- 智能掉水拦截 -->
+      <div class="alert-card" id="alertCard">
+        <div class="alert-text" id="alertText">
+          ⚠️ 暂无掉水告警
+        </div>
+        <button class="btn danger" id="alertActionBtn" style="width: 100%; border-radius: 2px;">一键反馈源头</button>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ================= 中间：控制台 ================= -->
+  <div class="panel">
+    <div class="panel-hd">
+      <span>🧠 交易控制中心</span>
+      <span class="badge" id="ticketIdBadge">单号 --</span>
+    </div>
+    <div class="panel-bd">
+
+      <div class="form-item">
+        <label>联赛</label>
+        <input type="text" class="big-input" id="inpLeague" value="韩国K甲组联赛">
+      </div>
+      <div class="form-item">
+        <label>对阵队伍</label>
+        <input type="text" class="big-input" id="inpTeam" value="江原 v 安阳">
+      </div>
+      <div class="form-item">
+        <label>盘口与原始水位</label>
+        <input type="text" class="big-input" id="inpMarket" value="小 2 / 2.5 @ 0.90" style="color: var(--blue);">
+      </div>
+
+      <!-- 数据计算区 -->
+      <div class="data-grid">
+        <div class="data-box">
+          <label>提取水位</label>
+          <input type="number" step="0.01" id="oddsRaw" value="0.90">
+        </div>
+        <div class="data-box">
+          <label style="color: var(--amber);">扣除退点</label>
+          <input type="number" step="0.01" id="oddsRebate" value="0.03" style="color: var(--amber);">
+        </div>
+        <div class="data-box" style="background: var(--blue-light); border-color: #b3d8ff;">
+          <label style="color: var(--blue);">最终回执水位</label>
+          <input type="number" step="0.01" id="oddsFinal" value="0.87" readonly style="color: var(--blue);">
+        </div>
+      </div>
+
+      <div class="data-grid">
+        <div class="data-box">
+          <label>总交货目标 (U)</label>
+          <input type="number" id="targetTotal" value="15000">
+        </div>
+        <div class="data-box">
+          <label>已分配额度 (U)</label>
+          <input type="number" id="targetAllocated" value="0" readonly>
+        </div>
+        <div class="data-box gap-alert" id="gapBox">
+          <label>未分配缺口 (U)</label>
+          <input type="number" id="targetGap" value="0" readonly>
+        </div>
+      </div>
+
+      <!-- 快捷操作矩阵 -->
+      <div class="action-grid">
+        <div class="btn-act" data-broadcast-action="prep"><strong>发预备单</strong><span>不带金额</span></div>
+        <div class="btn-act" data-broadcast-action="market"><strong>发盘口</strong><span>按资源过滤</span></div>
+        <div class="btn-act warning" data-broadcast-custom="等等 / 先暂停"><strong>发等等</strong><span>先暂停</span></div>
+        <div class="btn-act warning" data-broadcast-custom="继续打 / 恢复"><strong>发继续打</strong><span>恢复</span></div>
+        
+        <div class="btn-act danger" data-broadcast-custom="取消 / 整单取消"><strong>发取消</strong><span>整单取消</span></div>
+        <div class="btn-act" id="copyMarketBtn"><strong>复制盘口</strong><span>手工备用</span></div>
+        <div class="btn-act" data-broadcast-custom="请尽快回执当前单"><strong>一键催单</strong><span>催未回资源</span></div>
+        <div class="btn-act" id="buildSummaryBtn"><strong>生成汇总</strong><span>内部记录</span></div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- ================= 右侧：资源区 ================= -->
+  <div class="panel">
+    <div class="panel-hd">
+      <span>👥 资源调度 (全渠道)</span>
+      <span class="badge blue" id="sumConfirmed">已分配: 0</span>
+    </div>
+    <div class="panel-bd" style="padding: 8px;">
+
+      <div class="rc-header">
+        <div>资源绑定</div>
+        <div>条件</div>
+        <div>实际交货</div>
+        <div>条/类</div>
+        <div>单点</div>
+      </div>
+
+      <div id="resourceContainer">
+        <!-- 资源 1 -->
+        <div class="rc-row">
+          <div class="rc-id">
+            <input class="name" value="资源 1号">
+            <input class="bind" value="TG:GrpA">
+          </div>
+          <div class="rc-chk">
+            <label><input type="checkbox" class="chk-active" checked> 可发送</label>
+            <label><input type="checkbox" checked> 可美洲</label>
+          </div>
+          <div class="rc-amt">
+            <input type="number" class="val-amt" value="5000">
+          </div>
+          <div class="rc-cfg">
+            <input type="number" class="val-count" value="3">
+            <select><option>固定</option><option>浮动</option></select>
+          </div>
+          <div class="rc-btn">
+            <button>盘口</button><button onclick="loadReceipt(this)">回执</button><button>预备</button>
+          </div>
+        </div>
+
+        <!-- 资源 2 -->
+        <div class="rc-row disabled">
+          <div class="rc-id">
+            <input class="name" value="资源 2号">
+            <input class="bind" value="WA:ContactB">
+          </div>
+          <div class="rc-chk">
+            <label><input type="checkbox" class="chk-active"> 可发送</label>
+            <label><input type="checkbox"> 可美洲</label>
+          </div>
+          <div class="rc-amt">
+            <input type="number" class="val-amt" value="0" disabled>
+          </div>
+          <div class="rc-cfg">
+            <input type="number" class="val-count" value="1">
+            <select><option>固定</option><option>浮动</option></select>
+          </div>
+          <div class="rc-btn">
+            <button disabled>盘口</button><button disabled>回执</button><button disabled>预备</button>
+          </div>
+        </div>
+
+        <!-- 资源 3 -->
+        <div class="rc-row">
+          <div class="rc-id">
+            <input class="name" value="资源 3号">
+            <input class="bind" value="TG:GrpC">
+          </div>
+          <div class="rc-chk">
+            <label><input type="checkbox" class="chk-active" checked> 可发送</label>
+            <label><input type="checkbox" checked> 可美洲</label>
+          </div>
+          <div class="rc-amt">
+            <input type="number" class="val-amt" value="4000">
+          </div>
+          <div class="rc-cfg">
+            <input type="number" class="val-count" value="5">
+            <select><option>固定</option><option>浮动</option></select>
+          </div>
+          <div class="rc-btn">
+            <button>盘口</button><button onclick="loadReceipt(this)">回执</button><button>预备</button>
+          </div>
+        </div>
+
+        <!-- 资源 4 -->
+        <div class="rc-row" style="border-left: 3px solid var(--amber);">
+          <div class="rc-id">
+            <input class="name" value="大炮U">
+            <input class="bind" value="TG:GrpD">
+          </div>
+          <div class="rc-chk">
+            <label><input type="checkbox" class="chk-active" checked> 可发送</label>
+            <label><input type="checkbox" checked> 可美洲</label>
+          </div>
+          <div class="rc-amt">
+            <input type="number" class="val-amt" value="3000" style="color: var(--amber); border-color: var(--amber);">
+          </div>
+          <div class="rc-cfg">
+            <input type="number" class="val-count" value="2">
+            <select><option>浮动</option><option>固定</option></select>
+          </div>
+          <div class="rc-btn">
+            <button>盘口</button><button onclick="loadReceipt(this)">回执</button><button>预备</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 专属回单生成器 -->
+      <div class="receipt-box">
+        <div class="receipt-box-hd">📝 专属回单生成</div>
+        <div class="receipt-grid">
+          <div>
+            <label>目标资源</label>
+            <select id="recTarget">
+              <option value="资源 1号">资源 1号</option>
+              <option value="资源 3号">资源 3号</option>
+              <option value="大炮U">大炮U</option>
+            </select>
+          </div>
+          <div>
+            <label>确认金额</label>
+            <input type="number" id="recAmt" value="5000">
+          </div>
+          <div>
+            <label>做单条数</label>
+            <input type="number" id="recCount" value="4">
+          </div>
+          <div>
+            <label>最终水位</label>
+            <input type="text" id="recOdds" value="0.87" readonly style="color: var(--blue);">
+          </div>
+        </div>
+        <textarea class="receipt-area" id="recText" readonly></textarea>
+        <div style="display: flex; gap: 8px;">
+          <button class="btn primary" id="receiptSendButton" style="flex: 2;">✅ 一键发送</button>
+          <button class="btn" id="receiptCopyButton" style="flex: 1;">📋 复制文本</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/app-client.js"></script>
+
+</body>
+</html>

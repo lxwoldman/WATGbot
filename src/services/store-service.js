@@ -1,0 +1,185 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import { bootstrapData } from "../data/bootstrap-data.js";
+import {
+  buildReceiptText,
+  computeAllocated,
+  computeFinalOdds,
+  computeGap,
+  computeTargetTotal,
+  parseOddsFromMarket
+} from "./calculation-service.js";
+
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+export class StoreService {
+  constructor(config = {}) {
+    this.config = {
+      stateFile: path.resolve(config.stateFile || ".data/console-state.json"),
+      autosaveDebounceMs: Number(config.autosaveDebounceMs) || 150
+    };
+    this.state = clone(bootstrapData);
+    this.logs = [
+      { id: crypto.randomUUID(), time: new Date().toISOString(), level: "info", message: "系统初始化完成" }
+    ];
+    this.persistTimer = null;
+    this.persistPromise = null;
+  }
+
+  async initialize() {
+    await fs.mkdir(path.dirname(this.config.stateFile), { recursive: true });
+
+    try {
+      const raw = await fs.readFile(this.config.stateFile, "utf8");
+      const parsed = JSON.parse(raw);
+      if (parsed?.state) {
+        this.state = clone({
+          ...bootstrapData,
+          ...parsed.state,
+          currentTicket: {
+            ...bootstrapData.currentTicket,
+            ...(parsed.state.currentTicket || {})
+          },
+          sourceChannels: Array.isArray(parsed.state.sourceChannels)
+            ? parsed.state.sourceChannels
+            : bootstrapData.sourceChannels,
+          resources: Array.isArray(parsed.state.resources) ? parsed.state.resources : bootstrapData.resources
+        });
+      }
+
+      if (Array.isArray(parsed?.logs) && parsed.logs.length) {
+        this.logs = parsed.logs.slice(0, 200);
+      }
+
+      this.appendLog("已从磁盘恢复控制台状态");
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        this.appendLog(`状态恢复失败，已回退默认内存态: ${error.message}`, "warn");
+      }
+    }
+
+    return this.getSnapshot();
+  }
+
+  getSnapshot() {
+    const resources = this.state.resources;
+    const ticket = this.state.currentTicket;
+    const rawOdds = ticket.rawOdds || parseOddsFromMarket(ticket.marketText);
+    const finalOdds = computeFinalOdds(rawOdds, ticket.rebate);
+    const targetTotal = computeTargetTotal(ticket);
+    const allocated = computeAllocated(resources);
+    const gap = computeGap(targetTotal, allocated);
+
+    return {
+      currentTicket: {
+        ...ticket,
+        rawOdds,
+        finalOdds,
+        targetTotal,
+        allocated,
+        gap
+      },
+      sourceChannels: clone(this.state.sourceChannels),
+      resources: clone(resources),
+      logs: clone(this.logs)
+    };
+  }
+
+  appendLog(message, level = "info") {
+    this.logs.unshift({
+      id: crypto.randomUUID(),
+      time: new Date().toISOString(),
+      level,
+      message
+    });
+    this.logs = this.logs.slice(0, 200);
+    this.schedulePersist();
+  }
+
+  updateTicket(patch) {
+    this.state.currentTicket = {
+      ...this.state.currentTicket,
+      ...patch
+    };
+    if (patch.marketText && !patch.rawOdds) {
+      this.state.currentTicket.rawOdds = parseOddsFromMarket(patch.marketText);
+    }
+    this.appendLog("更新当前交易单信息");
+    return this.getSnapshot().currentTicket;
+  }
+
+  updateResource(resourceId, patch) {
+    const resource = this.state.resources.find((item) => item.id === resourceId);
+    if (!resource) return null;
+    Object.assign(resource, patch);
+    this.appendLog(`更新资源配置: ${resource.name}`);
+    return clone(resource);
+  }
+
+  updateSourceChannel(sourceChannelId, patch) {
+    const sourceChannel = this.state.sourceChannels.find((item) => item.id === sourceChannelId);
+    if (!sourceChannel) return null;
+    Object.assign(sourceChannel, patch);
+    this.appendLog(`更新源头通道: ${sourceChannel.label}`);
+    return clone(sourceChannel);
+  }
+
+  buildReceipt(resourceId, amountOverride, slipCountOverride) {
+    const resource = this.state.resources.find((item) => item.id === resourceId);
+    if (!resource) return null;
+    const ticket = this.getSnapshot().currentTicket;
+    const slipCount = Number(slipCountOverride ?? resource.slipCount) + 1;
+    const amount = Number(amountOverride ?? resource.amount);
+    return {
+      resourceId,
+      resourceName: resource.name,
+      amount,
+      slipCount,
+      text: buildReceiptText({
+        slipCount,
+        league: ticket.league,
+        teams: ticket.teams,
+        marketText: ticket.marketText,
+        finalOdds: ticket.finalOdds,
+        amount
+      })
+    };
+  }
+
+  schedulePersist() {
+    clearTimeout(this.persistTimer);
+    this.persistTimer = setTimeout(() => {
+      void this.persistNow();
+    }, this.config.autosaveDebounceMs);
+  }
+
+  async persistNow() {
+    clearTimeout(this.persistTimer);
+    this.persistTimer = null;
+
+    if (this.persistPromise) {
+      return await this.persistPromise;
+    }
+
+    this.persistPromise = fs.writeFile(
+      this.config.stateFile,
+      JSON.stringify(
+        {
+          savedAt: new Date().toISOString(),
+          state: this.state,
+          logs: this.logs
+        },
+        null,
+        2
+      )
+    );
+
+    try {
+      await this.persistPromise;
+    } finally {
+      this.persistPromise = null;
+    }
+  }
+}
