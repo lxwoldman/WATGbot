@@ -23,11 +23,67 @@ function slugify(value, fallbackPrefix) {
   return normalized || `${fallbackPrefix}-${crypto.randomUUID().slice(0, 8)}`;
 }
 
+function normalizeCustomCommand(command, index = 0) {
+  const text = String(command?.text || "").trim();
+  const label = String(command?.label || "").trim();
+
+  if (!text) {
+    return null;
+  }
+
+  return {
+    id: String(command?.id || `cmd-${index + 1}`),
+    label: label || text.slice(0, 8) || `指令 ${index + 1}`,
+    text
+  };
+}
+
+function normalizeConsoleSettings(settings = {}) {
+  const defaultSettings = bootstrapData.consoleSettings || {};
+  const customCommands = Array.isArray(settings.customCommands)
+    ? settings.customCommands.map((item, index) => normalizeCustomCommand(item, index)).filter(Boolean)
+    : [];
+
+  return {
+    exchangeRate: Number(settings.exchangeRate ?? defaultSettings.exchangeRate ?? 7) || 7,
+    specialTarget: Number(settings.specialTarget ?? defaultSettings.specialTarget ?? 20000) || 0,
+    followAmount: Number(settings.followAmount ?? defaultSettings.followAmount ?? 5000) || 0,
+    manualAmericas: Boolean(settings.manualAmericas ?? defaultSettings.manualAmericas ?? false),
+    customCommands: customCommands.length
+      ? customCommands
+      : (defaultSettings.customCommands || [])
+          .map((item, index) => normalizeCustomCommand(item, index))
+          .filter(Boolean)
+  };
+}
+
+function normalizeResource(resource = {}) {
+  return {
+    ...resource,
+    sendEnabled: Boolean(resource.sendEnabled),
+    canAmericas: Boolean(resource.canAmericas),
+    currency: resource.currency === "RMB" ? "RMB" : "U",
+    amount: Number(resource.amount ?? 0) || 0,
+    slipCount: Number(resource.slipCount ?? 0) || 0,
+    allocationType: resource.allocationType === "floating" ? "floating" : "fixed",
+    note: String(resource.note || "")
+  };
+}
+
+function normalizeSourceChannel(channel = {}) {
+  return {
+    ...channel,
+    online: Boolean(channel.online),
+    note: String(channel.note || "")
+  };
+}
+
 export class StoreService {
   constructor(config = {}) {
     this.config = {
       stateFile: path.resolve(config.stateFile || ".data/console-state.json"),
-      autosaveDebounceMs: Number(config.autosaveDebounceMs) || 150
+      autosaveDebounceMs: Number(config.autosaveDebounceMs) || 150,
+      auditFile: path.resolve(config.auditFile || ".data/audit-log.ndjson")
     };
     this.state = clone(bootstrapData);
     this.logs = [
@@ -35,10 +91,12 @@ export class StoreService {
     ];
     this.persistTimer = null;
     this.persistPromise = null;
+    this.auditPromise = null;
   }
 
   async initialize() {
     await fs.mkdir(path.dirname(this.config.stateFile), { recursive: true });
+    await fs.mkdir(path.dirname(this.config.auditFile), { recursive: true });
 
     try {
       const raw = await fs.readFile(this.config.stateFile, "utf8");
@@ -51,10 +109,13 @@ export class StoreService {
             ...bootstrapData.currentTicket,
             ...(parsed.state.currentTicket || {})
           },
+          consoleSettings: normalizeConsoleSettings(parsed.state.consoleSettings),
           sourceChannels: Array.isArray(parsed.state.sourceChannels)
-            ? parsed.state.sourceChannels
-            : bootstrapData.sourceChannels,
-          resources: Array.isArray(parsed.state.resources) ? parsed.state.resources : bootstrapData.resources
+            ? parsed.state.sourceChannels.map((item) => normalizeSourceChannel(item))
+            : bootstrapData.sourceChannels.map((item) => normalizeSourceChannel(item)),
+          resources: Array.isArray(parsed.state.resources)
+            ? parsed.state.resources.map((item) => normalizeResource(item))
+            : bootstrapData.resources.map((item) => normalizeResource(item))
         });
       }
 
@@ -90,6 +151,7 @@ export class StoreService {
         allocated,
         gap
       },
+      consoleSettings: clone(this.state.consoleSettings || normalizeConsoleSettings()),
       sourceChannels: clone(this.state.sourceChannels),
       resources: clone(resources),
       logs: clone(this.logs)
@@ -119,10 +181,19 @@ export class StoreService {
     return this.getSnapshot().currentTicket;
   }
 
+  updateConsoleSettings(patch) {
+    this.state.consoleSettings = normalizeConsoleSettings({
+      ...this.state.consoleSettings,
+      ...patch
+    });
+    this.appendLog("更新共享控制台配置");
+    return clone(this.state.consoleSettings);
+  }
+
   updateResource(resourceId, patch) {
     const resource = this.state.resources.find((item) => item.id === resourceId);
     if (!resource) return null;
-    Object.assign(resource, patch);
+    Object.assign(resource, normalizeResource({ ...resource, ...patch }));
     this.appendLog(`更新资源配置: ${resource.name}`);
     return clone(resource);
   }
@@ -130,7 +201,7 @@ export class StoreService {
   updateSourceChannel(sourceChannelId, patch) {
     const sourceChannel = this.state.sourceChannels.find((item) => item.id === sourceChannelId);
     if (!sourceChannel) return null;
-    Object.assign(sourceChannel, patch);
+    Object.assign(sourceChannel, normalizeSourceChannel({ ...sourceChannel, ...patch }));
     this.appendLog(`更新源头通道: ${sourceChannel.label}`);
     return clone(sourceChannel);
   }
@@ -202,6 +273,7 @@ export class StoreService {
       remoteId: normalizedRemoteId,
       sendEnabled: true,
       canAmericas: true,
+      currency: "U",
       amount: 0,
       slipCount: 1,
       allocationType: "fixed",
@@ -276,5 +348,26 @@ export class StoreService {
     } finally {
       this.persistPromise = null;
     }
+  }
+
+  async recordAudit(entry) {
+    const payload = {
+      id: crypto.randomUUID(),
+      at: new Date().toISOString(),
+      ...entry
+    };
+
+    const line = `${JSON.stringify(payload)}\n`;
+    this.auditPromise = (this.auditPromise || Promise.resolve())
+      .then(() => fs.appendFile(this.config.auditFile, line))
+      .catch((error) => {
+        console.error(`[audit] failed to append audit log: ${error.message}`);
+      });
+
+    return await this.auditPromise;
+  }
+
+  async flushAudit() {
+    return await (this.auditPromise || Promise.resolve());
   }
 }

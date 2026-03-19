@@ -3,6 +3,7 @@ import { Server as SocketIOServer } from "socket.io";
 import { assertNodeVersion, env } from "./config/env.js";
 import { logger } from "./lib/logger.js";
 import { createApp } from "./app.js";
+import { verifySocketAccess } from "./lib/access-auth.js";
 import { StoreService } from "./services/store-service.js";
 import { ChannelRouter } from "./services/channel-router.js";
 import { WhatsAppWebJsAdapter } from "./adapters/whatsapp-webjs-adapter.js";
@@ -40,10 +41,15 @@ const app = createApp({
 });
 
 const httpServer = createServer(app);
-const io = new SocketIOServer(httpServer, {
-  cors: {
-    origin: "*"
+const io = new SocketIOServer(httpServer);
+
+io.use((socket, next) => {
+  if (!verifySocketAccess(socket, env.auth)) {
+    next(new Error("Authentication required."));
+    return;
   }
+
+  next();
 });
 
 ioRef = io;
@@ -131,7 +137,7 @@ async function gracefulShutdown(signal) {
   logger.info(`Received ${signal}, flushing in-memory state before exit.`);
 
   try {
-    await Promise.allSettled([store.persistNow(), whatsappAdapter.persistDiscoveredChats()]);
+    await Promise.allSettled([store.persistNow(), store.flushAudit(), whatsappAdapter.persistDiscoveredChats()]);
   } finally {
     httpServer.close(() => {
       process.exit(0);

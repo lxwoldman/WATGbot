@@ -4,6 +4,7 @@ node_modules/
 .sessions/
 .wwebjs_cache/
 .data/
+.frames/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

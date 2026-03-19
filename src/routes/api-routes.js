@@ -1,5 +1,6 @@
 import express from "express";
 import QRCode from "qrcode";
+import { getRequestActor } from "../lib/request-actor.js";
 import { fail, ok } from "../lib/json-response.js";
 import { pushSnapshot } from "../socket/register-socket.js";
 
@@ -10,8 +11,167 @@ function maybeEmit(getIo, store) {
   }
 }
 
+function sanitizeString(value) {
+  return String(value ?? "").trim();
+}
+
+function sanitizeNumber(value, fallback = 0, minimum = 0) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) {
+    return fallback;
+  }
+  return Math.max(parsed, minimum);
+}
+
+function sanitizeBoolean(value) {
+  return Boolean(value);
+}
+
+function sanitizeCustomCommands(commands) {
+  if (!Array.isArray(commands)) {
+    return undefined;
+  }
+
+  return commands
+    .map((command, index) => {
+      const text = sanitizeString(command?.text);
+      const label = sanitizeString(command?.label);
+      if (!text) {
+        return null;
+      }
+
+      return {
+        id: sanitizeString(command?.id) || `cmd-${index + 1}`,
+        label: label || text.slice(0, 8) || `指令 ${index + 1}`,
+        text
+      };
+    })
+    .filter(Boolean);
+}
+
+function sanitizeConsoleSettingsPatch(payload = {}) {
+  const patch = {};
+
+  if ("exchangeRate" in payload) {
+    patch.exchangeRate = sanitizeNumber(payload.exchangeRate, 7, 0.01);
+  }
+  if ("specialTarget" in payload) {
+    patch.specialTarget = sanitizeNumber(payload.specialTarget, 0, 0);
+  }
+  if ("followAmount" in payload) {
+    patch.followAmount = sanitizeNumber(payload.followAmount, 0, 0);
+  }
+  if ("manualAmericas" in payload) {
+    patch.manualAmericas = sanitizeBoolean(payload.manualAmericas);
+  }
+  if ("customCommands" in payload) {
+    const commands = sanitizeCustomCommands(payload.customCommands);
+    if (commands) {
+      patch.customCommands = commands;
+    }
+  }
+
+  return patch;
+}
+
+function sanitizeTicketPatch(payload = {}) {
+  const patch = {};
+
+  if ("sourceChannelId" in payload) {
+    patch.sourceChannelId = sanitizeString(payload.sourceChannelId);
+  }
+  if ("league" in payload) {
+    patch.league = sanitizeString(payload.league);
+  }
+  if ("teams" in payload) {
+    patch.teams = sanitizeString(payload.teams);
+  }
+  if ("marketText" in payload) {
+    patch.marketText = sanitizeString(payload.marketText);
+  }
+  if ("rawOdds" in payload) {
+    patch.rawOdds = sanitizeNumber(payload.rawOdds, 0, 0);
+  }
+  if ("rebate" in payload) {
+    patch.rebate = sanitizeNumber(payload.rebate, 0, 0);
+  }
+  if ("deliveryTarget" in payload) {
+    patch.deliveryTarget = sanitizeNumber(payload.deliveryTarget, 0, 0);
+  }
+  if ("internalTarget" in payload) {
+    patch.internalTarget = sanitizeNumber(payload.internalTarget, 0, 0);
+  }
+
+  return patch;
+}
+
+function sanitizeResourcePatch(payload = {}) {
+  const patch = {};
+
+  if ("name" in payload) {
+    patch.name = sanitizeString(payload.name);
+  }
+  if ("remoteId" in payload) {
+    patch.remoteId = sanitizeString(payload.remoteId);
+  }
+  if ("bindingLabel" in payload) {
+    patch.bindingLabel = sanitizeString(payload.bindingLabel);
+  }
+  if ("note" in payload) {
+    patch.note = sanitizeString(payload.note);
+  }
+  if ("sendEnabled" in payload) {
+    patch.sendEnabled = sanitizeBoolean(payload.sendEnabled);
+  }
+  if ("canAmericas" in payload) {
+    patch.canAmericas = sanitizeBoolean(payload.canAmericas);
+  }
+  if ("amount" in payload) {
+    patch.amount = sanitizeNumber(payload.amount, 0, 0);
+  }
+  if ("slipCount" in payload) {
+    patch.slipCount = sanitizeNumber(payload.slipCount, 0, 0);
+  }
+  if ("allocationType" in payload) {
+    patch.allocationType = sanitizeString(payload.allocationType) === "floating" ? "floating" : "fixed";
+  }
+  if ("currency" in payload) {
+    patch.currency = sanitizeString(payload.currency) === "RMB" ? "RMB" : "U";
+  }
+
+  return patch;
+}
+
+function sanitizeSourceChannelPatch(payload = {}) {
+  const patch = {};
+
+  if ("label" in payload) {
+    patch.label = sanitizeString(payload.label);
+  }
+  if ("remoteId" in payload) {
+    patch.remoteId = sanitizeString(payload.remoteId);
+  }
+  if ("note" in payload) {
+    patch.note = sanitizeString(payload.note);
+  }
+  if ("online" in payload) {
+    patch.online = sanitizeBoolean(payload.online);
+  }
+
+  return patch;
+}
+
 export function createApiRouter({ store, routerService, getIo, whatsappAdapter, telegramAdapter }) {
   const router = express.Router();
+
+  async function audit(req, action, target, details = {}) {
+    await store.recordAudit({
+      actor: getRequestActor(req),
+      action,
+      target,
+      details
+    });
+  }
 
   async function buildRecentChats(limit = 80) {
     const [whatsappChats, telegramDialogs] = await Promise.all([
@@ -54,6 +214,20 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
     ok(res, store.getSnapshot());
   });
 
+  router.patch("/console-settings", async (req, res) => {
+    try {
+      const patch = sanitizeConsoleSettingsPatch(req.body || {});
+      const updated = store.updateConsoleSettings(patch);
+      await audit(req, "console_settings.update", "console_settings", {
+        keys: Object.keys(patch)
+      });
+      maybeEmit(getIo, store);
+      ok(res, updated);
+    } catch (error) {
+      fail(res, error.message, 500);
+    }
+  });
+
   router.get("/discovery/recent-chats", async (req, res) => {
     try {
       const limit = Number(req.query.limit) || 80;
@@ -81,6 +255,9 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
   router.post("/integrations/whatsapp/connect", async (req, res) => {
     try {
       const status = await whatsappAdapter.connect(req.body || {});
+      await audit(req, "whatsapp.connect", "integration.whatsapp", {
+        mode: sanitizeString(req.body?.mode || "qr")
+      });
       maybeEmit(getIo, store);
       ok(res, status);
     } catch (error) {
@@ -91,6 +268,7 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
   router.post("/integrations/whatsapp/reconnect", async (req, res) => {
     try {
       const status = await whatsappAdapter.reconnect();
+      await audit(req, "whatsapp.reconnect", "integration.whatsapp");
       maybeEmit(getIo, store);
       ok(res, status);
     } catch (error) {
@@ -101,6 +279,7 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
   router.post("/integrations/whatsapp/logout", async (req, res) => {
     try {
       const status = await whatsappAdapter.logout();
+      await audit(req, "whatsapp.logout", "integration.whatsapp");
       maybeEmit(getIo, store);
       ok(res, status);
     } catch (error) {
@@ -125,6 +304,7 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
   router.post("/integrations/telegram-userbot/request-code", async (req, res) => {
     try {
       const status = await telegramAdapter.requestLoginCode(req.body || {});
+      await audit(req, "telegram.request_code", "integration.telegram_userbot");
       maybeEmit(getIo, store);
       ok(res, status);
     } catch (error) {
@@ -135,6 +315,7 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
   router.post("/integrations/telegram-userbot/complete-login", async (req, res) => {
     try {
       const status = await telegramAdapter.completeLogin(req.body || {});
+      await audit(req, "telegram.complete_login", "integration.telegram_userbot");
       maybeEmit(getIo, store);
       ok(res, status);
     } catch (error) {
@@ -145,6 +326,7 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
   router.post("/integrations/telegram-userbot/logout", async (req, res) => {
     try {
       const status = await telegramAdapter.logout();
+      await audit(req, "telegram.logout", "integration.telegram_userbot");
       maybeEmit(getIo, store);
       ok(res, status);
     } catch (error) {
@@ -152,28 +334,52 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
     }
   });
 
-  router.patch("/ticket/current", (req, res) => {
-    const updated = store.updateTicket(req.body || {});
-    maybeEmit(getIo, store);
-    ok(res, updated);
+  router.patch("/ticket/current", async (req, res) => {
+    try {
+      const patch = sanitizeTicketPatch(req.body || {});
+      const updated = store.updateTicket(patch);
+      await audit(req, "ticket.update", "ticket.current", {
+        keys: Object.keys(patch)
+      });
+      maybeEmit(getIo, store);
+      ok(res, updated);
+    } catch (error) {
+      fail(res, error.message, 500);
+    }
   });
 
-  router.patch("/resources/:resourceId", (req, res) => {
-    const updated = store.updateResource(req.params.resourceId, req.body || {});
-    if (!updated) {
-      return fail(res, "Resource not found.", 404);
+  router.patch("/resources/:resourceId", async (req, res) => {
+    try {
+      const patch = sanitizeResourcePatch(req.body || {});
+      const updated = store.updateResource(req.params.resourceId, patch);
+      if (!updated) {
+        return fail(res, "Resource not found.", 404);
+      }
+      await audit(req, "resource.update", `resource.${req.params.resourceId}`, {
+        keys: Object.keys(patch)
+      });
+      maybeEmit(getIo, store);
+      ok(res, updated);
+    } catch (error) {
+      fail(res, error.message, 500);
     }
-    maybeEmit(getIo, store);
-    ok(res, updated);
   });
 
-  router.patch("/source-channels/:sourceChannelId", (req, res) => {
-    const updated = store.updateSourceChannel(req.params.sourceChannelId, req.body || {});
-    if (!updated) {
-      return fail(res, "Source channel not found.", 404);
+  router.patch("/source-channels/:sourceChannelId", async (req, res) => {
+    try {
+      const patch = sanitizeSourceChannelPatch(req.body || {});
+      const updated = store.updateSourceChannel(req.params.sourceChannelId, patch);
+      if (!updated) {
+        return fail(res, "Source channel not found.", 404);
+      }
+      await audit(req, "source_channel.update", `source_channel.${req.params.sourceChannelId}`, {
+        keys: Object.keys(patch)
+      });
+      maybeEmit(getIo, store);
+      ok(res, updated);
+    } catch (error) {
+      fail(res, error.message, 500);
     }
-    maybeEmit(getIo, store);
-    ok(res, updated);
   });
 
   router.post("/bindings", (req, res) => {
@@ -211,27 +417,41 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
               note
             });
 
-      maybeEmit(getIo, store);
-      ok(res, created);
+      audit(req, "binding.upsert", `${role}.${created.id}`, {
+        role,
+        platform,
+        remoteId
+      })
+        .then(() => {
+          maybeEmit(getIo, store);
+          ok(res, created);
+        })
+        .catch((error) => fail(res, error.message, 500));
     } catch (error) {
       fail(res, error.message, 500);
     }
   });
 
-  router.delete("/source-channels/:sourceChannelId", (req, res) => {
+  router.delete("/source-channels/:sourceChannelId", async (req, res) => {
     const removed = store.removeSourceChannel(req.params.sourceChannelId);
     if (!removed) {
       return fail(res, "Source channel not found.", 404);
     }
+    await audit(req, "source_channel.delete", `source_channel.${req.params.sourceChannelId}`, {
+      label: removed.label
+    });
     maybeEmit(getIo, store);
     ok(res, removed);
   });
 
-  router.delete("/resources/:resourceId", (req, res) => {
+  router.delete("/resources/:resourceId", async (req, res) => {
     const removed = store.removeResource(req.params.resourceId);
     if (!removed) {
       return fail(res, "Resource not found.", 404);
     }
+    await audit(req, "resource.delete", `resource.${req.params.resourceId}`, {
+      name: removed.name
+    });
     maybeEmit(getIo, store);
     ok(res, removed);
   });
@@ -242,6 +462,9 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
       if (!text) return fail(res, "text is required.");
       const sourceId = store.state.currentTicket.sourceChannelId;
       const result = await routerService.replyToSource(sourceId, text);
+      await audit(req, "action.source_reply", `source_channel.${sourceId}`, {
+        text: sanitizeString(text)
+      });
       maybeEmit(getIo, store);
       ok(res, result);
     } catch (error) {
@@ -259,6 +482,10 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
         }
         return true;
       });
+      await audit(req, "action.broadcast_prep", "resources.enabled", {
+        recipients: Array.isArray(result) ? result.length : 0,
+        ticketId: ticket.id
+      });
       maybeEmit(getIo, store);
       ok(res, result);
     } catch (error) {
@@ -275,6 +502,10 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
         }
         return true;
       });
+      await audit(req, "action.broadcast_market", "resources.enabled", {
+        recipients: Array.isArray(result) ? result.length : 0,
+        ticketId: ticket.id
+      });
       maybeEmit(getIo, store);
       ok(res, result);
     } catch (error) {
@@ -289,6 +520,10 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
         return fail(res, "text is required.");
       }
       const result = await routerService.broadcastToEnabledResources(text);
+      await audit(req, "action.broadcast_custom", "resources.enabled", {
+        recipients: Array.isArray(result) ? result.length : 0,
+        text
+      });
       maybeEmit(getIo, store);
       ok(res, result);
     } catch (error) {
@@ -318,6 +553,10 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
         return fail(res, "Unsupported kind.", 400);
       }
       const result = await routerService.sendToResource(resourceId, text);
+      await audit(req, "action.resource_send", `resource.${resourceId}`, {
+        kind,
+        text
+      });
       maybeEmit(getIo, store);
       ok(res, { kind, result });
     } catch (error) {

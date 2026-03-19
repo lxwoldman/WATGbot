@@ -7,6 +7,14 @@ const defaultCustomCommands = [
   { id: "urge", label: "催单", text: "好了吗" }
 ];
 
+const defaultConsoleSettings = {
+  exchangeRate: 7,
+  specialTarget: 20000,
+  followAmount: 5000,
+  manualAmericas: false,
+  customCommands: defaultCustomCommands
+};
+
 const defaultCommandById = Object.fromEntries(
   defaultCustomCommands.map((item) => [item.id, item])
 );
@@ -150,6 +158,15 @@ function loadCustomCommands() {
   return normalized.length ? normalized : defaultCustomCommands.map((item, index) => normalizeCommand(item, index));
 }
 
+const legacySharedSettings = {
+  customCommands: loadCustomCommands(),
+  resourceCurrencies: loadJson(storageKeys.resourceCurrencies, {}),
+  exchangeRate: loadNumber(storageKeys.exchangeRate, defaultConsoleSettings.exchangeRate),
+  specialTarget: loadNumber(storageKeys.specialTarget, defaultConsoleSettings.specialTarget),
+  followAmount: loadNumber(storageKeys.followAmount, defaultConsoleSettings.followAmount),
+  manualAmericas: loadBoolean(storageKeys.manualAmericas, defaultConsoleSettings.manualAmericas)
+};
+
 const state = {
   snapshot: null,
   selectedSourceId: null,
@@ -160,14 +177,17 @@ const state = {
   lastSourceFingerprint: "",
   latestFeedbackPrice: "",
   latestSupplierRepriceText: "",
-  customCommands: loadCustomCommands(),
-  resourceCurrencies: loadJson(storageKeys.resourceCurrencies, {}),
-  exchangeRate: loadNumber(storageKeys.exchangeRate, 7),
-  specialTarget: loadNumber(storageKeys.specialTarget, 20000),
-  followAmount: loadNumber(storageKeys.followAmount, 5000),
-  manualAmericas: loadBoolean(storageKeys.manualAmericas, false),
+  customCommands: defaultCustomCommands.map((item, index) => normalizeCommand(item, index)),
+  resourceCurrencies: { ...legacySharedSettings.resourceCurrencies },
+  exchangeRate: defaultConsoleSettings.exchangeRate,
+  specialTarget: defaultConsoleSettings.specialTarget,
+  followAmount: defaultConsoleSettings.followAmount,
+  manualAmericas: defaultConsoleSettings.manualAmericas,
   lastStableTicket: loadJson(storageKeys.stableTicket, null),
   receiptOddsManual: false,
+  sharedSettingsHydrated: false,
+  legacySettingsMigrated: false,
+  consoleSettingsUnsupportedNotified: false,
   integration: {
     whatsapp: null,
     telegram: null
@@ -280,7 +300,9 @@ async function api(path, options = {}) {
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok || !payload.ok) {
-    throw new Error(payload?.error?.message || `Request failed: ${response.status}`);
+    const error = new Error(payload?.error?.message || `Request failed: ${response.status}`);
+    error.status = response.status;
+    throw error;
   }
 
   return payload.data;
@@ -610,12 +632,206 @@ function deriveCommandTone(command) {
   return "";
 }
 
-function saveResourceCurrencies() {
-  saveJson(storageKeys.resourceCurrencies, state.resourceCurrencies);
+function normalizeSharedSettings(settings = {}) {
+  const commands = Array.isArray(settings.customCommands)
+    ? settings.customCommands.map((item, index) => normalizeCommand(item, index)).filter((item) => item.text)
+    : [];
+
+  return {
+    exchangeRate: Number(settings.exchangeRate ?? defaultConsoleSettings.exchangeRate) || defaultConsoleSettings.exchangeRate,
+    specialTarget: Number(settings.specialTarget ?? defaultConsoleSettings.specialTarget) || 0,
+    followAmount: Number(settings.followAmount ?? defaultConsoleSettings.followAmount) || 0,
+    manualAmericas: Boolean(settings.manualAmericas ?? defaultConsoleSettings.manualAmericas),
+    customCommands: commands.length
+      ? commands
+      : defaultConsoleSettings.customCommands.map((item, index) => normalizeCommand(item, index))
+  };
 }
 
-function saveCustomCommands() {
-  saveJson(storageKeys.customCommands, state.customCommands);
+function normalizeCommandList(list = []) {
+  return list.map((item) => ({
+    id: String(item.id || ""),
+    label: String(item.label || ""),
+    text: String(item.text || "")
+  }));
+}
+
+function sameCommandSet(left = [], right = []) {
+  return JSON.stringify(normalizeCommandList(left)) === JSON.stringify(normalizeCommandList(right));
+}
+
+function sameSharedSettings(left, right) {
+  return (
+    Number(left.exchangeRate) === Number(right.exchangeRate) &&
+    Number(left.specialTarget) === Number(right.specialTarget) &&
+    Number(left.followAmount) === Number(right.followAmount) &&
+    Boolean(left.manualAmericas) === Boolean(right.manualAmericas) &&
+    sameCommandSet(left.customCommands, right.customCommands)
+  );
+}
+
+function hasLegacySharedOverrides() {
+  const normalizedLegacy = normalizeSharedSettings(legacySharedSettings);
+  return (
+    !sameSharedSettings(normalizedLegacy, normalizeSharedSettings(defaultConsoleSettings)) ||
+    Object.keys(legacySharedSettings.resourceCurrencies || {}).length > 0
+  );
+}
+
+function shouldUseLegacySharedState(serverSettings) {
+  return !state.legacySettingsMigrated && hasLegacySharedOverrides() && sameSharedSettings(serverSettings, defaultConsoleSettings);
+}
+
+function resolveResourceCurrencies(resources = []) {
+  return Object.fromEntries(
+    resources.map((resource) => {
+      const serverCurrency = resource.currency === "RMB" ? "RMB" : "U";
+      const legacyCurrency = legacySharedSettings.resourceCurrencies?.[resource.id];
+      const currency =
+        !state.legacySettingsMigrated && serverCurrency === "U" && legacyCurrency === "RMB"
+          ? "RMB"
+          : serverCurrency;
+      return [resource.id, currency];
+    })
+  );
+}
+
+function getSnapshotConsoleSettings(snapshot) {
+  const serverSettings = normalizeSharedSettings(snapshot?.consoleSettings || defaultConsoleSettings);
+  if (shouldUseLegacySharedState(serverSettings)) {
+    return normalizeSharedSettings(legacySharedSettings);
+  }
+  return serverSettings;
+}
+
+function applySharedSettings(snapshot) {
+  const sharedSettings = getSnapshotConsoleSettings(snapshot);
+  state.customCommands = sharedSettings.customCommands;
+  state.exchangeRate = sharedSettings.exchangeRate;
+  state.specialTarget = sharedSettings.specialTarget;
+  state.followAmount = sharedSettings.followAmount;
+  state.manualAmericas = sharedSettings.manualAmericas;
+  state.resourceCurrencies = resolveResourceCurrencies(snapshot?.resources || []);
+  state.sharedSettingsHydrated = true;
+}
+
+function buildConsoleSettingsPayload() {
+  return {
+    exchangeRate: state.exchangeRate,
+    specialTarget: state.specialTarget,
+    followAmount: state.followAmount,
+    manualAmericas: state.manualAmericas,
+    customCommands: state.customCommands.map((command) => ({
+      id: command.id,
+      label: command.label,
+      text: command.text
+    }))
+  };
+}
+
+function notifySharedConfigUnavailable(error) {
+  if (error?.status !== 404) {
+    return false;
+  }
+
+  if (!state.consoleSettingsUnsupportedNotified) {
+    state.consoleSettingsUnsupportedNotified = true;
+    notify("当前后端还是旧版本，请重启本地服务后再使用共享配置", "red", true);
+  }
+
+  return true;
+}
+
+async function persistConsoleSettingsNow(successText = "") {
+  try {
+    await api("/api/console-settings", {
+      method: "PATCH",
+      body: buildConsoleSettingsPayload()
+    });
+  } catch (error) {
+    if (notifySharedConfigUnavailable(error)) {
+      return false;
+    }
+    throw error;
+  }
+
+  if (successText) {
+    notify(successText, "blue", true);
+  }
+
+  return true;
+}
+
+const scheduleConsoleSettingsSync = debounce(async () => {
+  try {
+    await persistConsoleSettingsNow();
+  } catch (error) {
+    notify(error.message, "red", true);
+  }
+}, 300);
+
+async function migrateLegacySharedState(snapshot) {
+  if (state.legacySettingsMigrated || !hasLegacySharedOverrides()) {
+    state.legacySettingsMigrated = true;
+    return;
+  }
+
+  if (!snapshot?.consoleSettings) {
+    if (!state.consoleSettingsUnsupportedNotified) {
+      state.consoleSettingsUnsupportedNotified = true;
+      notify("当前后端还是旧版本，请重启本地服务后再迁移共享配置", "red", true);
+    }
+    return;
+  }
+
+  const serverSettings = normalizeSharedSettings(snapshot?.consoleSettings || defaultConsoleSettings);
+  const shouldMigrateSettings = shouldUseLegacySharedState(serverSettings);
+  const currencyUpdates = (snapshot?.resources || [])
+    .map((resource) => ({
+      resourceId: resource.id,
+      currency: legacySharedSettings.resourceCurrencies?.[resource.id],
+      serverCurrency: resource.currency === "RMB" ? "RMB" : "U"
+    }))
+    .filter((item) => item.currency && item.currency !== item.serverCurrency);
+
+  if (!shouldMigrateSettings && !currencyUpdates.length) {
+    state.legacySettingsMigrated = true;
+    return;
+  }
+
+  try {
+    if (shouldMigrateSettings) {
+      await api("/api/console-settings", {
+        method: "PATCH",
+        body: {
+          exchangeRate: legacySharedSettings.exchangeRate,
+          specialTarget: legacySharedSettings.specialTarget,
+          followAmount: legacySharedSettings.followAmount,
+          manualAmericas: legacySharedSettings.manualAmericas,
+          customCommands: legacySharedSettings.customCommands
+        }
+      });
+    }
+
+    if (currencyUpdates.length) {
+      await Promise.all(
+        currencyUpdates.map((item) =>
+          api(`/api/resources/${item.resourceId}`, {
+            method: "PATCH",
+            body: { currency: item.currency }
+          })
+        )
+      );
+    }
+
+    state.legacySettingsMigrated = true;
+    notify("已将本机旧配置迁移到服务端共享状态", "blue", true);
+  } catch (error) {
+    if (notifySharedConfigUnavailable(error)) {
+      return;
+    }
+    notify(`共享配置迁移失败: ${error.message}`, "red", true);
+  }
 }
 
 function renderQuickReplies() {
@@ -686,7 +902,7 @@ function getSelectedRecentChat() {
 }
 
 function getResourceCurrency(resourceId) {
-  return state.resourceCurrencies[resourceId] || "U";
+  return state.resourceCurrencies[resourceId] === "RMB" ? "RMB" : "U";
 }
 
 function toUsd(amount, currency) {
@@ -715,7 +931,8 @@ function collectResourcePatch(row) {
     canAmericas: Boolean(row.querySelector(".resource-americas")?.checked),
     amount: Number(row.querySelector(".resource-amount")?.value || 0),
     slipCount: Number(row.querySelector(".resource-slip")?.value || 0),
-    allocationType: row.querySelector(".resource-type")?.value || "fixed"
+    allocationType: row.querySelector(".resource-type")?.value || "fixed",
+    currency: row.querySelector(".resource-currency")?.value === "RMB" ? "RMB" : "U"
   };
 }
 
@@ -1130,6 +1347,7 @@ function renderPersistentControls() {
 function renderSnapshot(snapshot) {
   const previousFingerprint = state.lastSourceFingerprint;
   state.snapshot = snapshot;
+  applySharedSettings(snapshot);
   const ticket = snapshot.currentTicket || {};
   const sourceAnalysis = analyzeSourceMessage(ticket.sourceMessage?.text || "");
   const displayTicket = getProtectedConsoleTicket(ticket, sourceAnalysis, snapshot.logs || []);
@@ -1165,6 +1383,8 @@ function renderSnapshot(snapshot) {
   } else {
     state.lastSourceFingerprint = sourceFingerprint;
   }
+
+  void migrateLegacySharedState(snapshot);
 }
 
 function renderWhatsAppStatus(status) {
@@ -1354,26 +1574,26 @@ function bindCoreInputs() {
 
   els.exchangeRate.addEventListener("input", () => {
     state.exchangeRate = getExchangeRateValue();
-    saveNumber(storageKeys.exchangeRate, state.exchangeRate);
     calculateLocal();
+    scheduleConsoleSettingsSync();
   });
 
   els.specialTarget.addEventListener("input", () => {
     state.specialTarget = getSpecialTargetValue();
-    saveNumber(storageKeys.specialTarget, state.specialTarget);
     calculateLocal();
+    scheduleConsoleSettingsSync();
   });
 
   els.followAmount.addEventListener("input", () => {
     state.followAmount = getFollowAmountValue();
-    saveNumber(storageKeys.followAmount, state.followAmount);
     calculateLocal();
+    scheduleConsoleSettingsSync();
   });
 
   els.americasOrderCheckbox.addEventListener("change", () => {
     state.manualAmericas = els.americasOrderCheckbox.checked;
-    saveBoolean(storageKeys.manualAmericas, state.manualAmericas);
     calculateLocal();
+    scheduleConsoleSettingsSync();
   });
 
   [els.recTarget, els.recAmt, els.recCount, els.recOdds].forEach((element) => {
@@ -1501,7 +1721,7 @@ function bindResourceEvents() {
 
     if (event.target.matches(".resource-currency")) {
       state.resourceCurrencies[resourceId] = event.target.value;
-      saveResourceCurrencies();
+      scheduleResourceSync(resourceId, collectResourcePatch(row));
       calculateLocal();
       return;
     }
@@ -1589,7 +1809,7 @@ function bindCommandEditorEvents() {
     renderCommandEditor();
   });
 
-  els.commandSaveBtn.addEventListener("click", () => {
+  els.commandSaveBtn.addEventListener("click", async () => {
     const rows = Array.from(els.commandEditorList.querySelectorAll("[data-command-editor-id]"));
     const nextCommands = rows
       .map((row, index) =>
@@ -1607,10 +1827,14 @@ function bindCommandEditorEvents() {
     state.customCommands = nextCommands.length
       ? nextCommands
       : defaultCustomCommands.map((item, index) => normalizeCommand(item, index));
-    saveCustomCommands();
     renderCustomCommands();
-    closeCommandModal();
-    notify("快捷指令已保存", "blue", true);
+
+    try {
+      await persistConsoleSettingsNow("快捷指令已保存");
+      closeCommandModal();
+    } catch (error) {
+      notify(error.message, "red", true);
+    }
   });
 }
 

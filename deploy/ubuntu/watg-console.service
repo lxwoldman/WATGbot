@@ -1,0 +1,20 @@
+[Unit]
+Description=Broker Console Pro
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/watgbot
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/watgbot/.env
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+KillSignal=SIGINT
+
+[Install]
+WantedBy=multi-user.target

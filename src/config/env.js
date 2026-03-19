@@ -17,9 +17,14 @@ export const env = {
   nodeEnv: process.env.NODE_ENV || "development",
   port: numberFromEnv("PORT", 3000),
   appBaseUrl: process.env.APP_BASE_URL || "http://localhost:3000",
+  auth: {
+    username: process.env.CONSOLE_AUTH_USERNAME || "",
+    password: process.env.CONSOLE_AUTH_PASSWORD || ""
+  },
   store: {
     stateFile: process.env.STORE_STATE_FILE || ".data/console-state.json",
-    autosaveDebounceMs: numberFromEnv("STORE_AUTOSAVE_DEBOUNCE_MS", 150)
+    autosaveDebounceMs: numberFromEnv("STORE_AUTOSAVE_DEBOUNCE_MS", 150),
+    auditFile: process.env.STORE_AUDIT_FILE || ".data/audit-log.ndjson"
   },
   whatsapp: {
     authDir: process.env.WHATSAPP_AUTH_DIR || ".sessions/whatsapp-baileys",

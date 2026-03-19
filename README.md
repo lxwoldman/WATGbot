@@ -1,29 +1,22 @@
 # Broker Console Backend
 
-这是一版继续朝真实生产链路推进的后端骨架，目标是把你当前认可的 `index.html` 接上真实的 `WhatsApp Baileys + Telegram UserBot` 能力。
+这是一版已经把前端控制台、`whatsapp-web.js`、`Telegram UserBot` 和动态绑定跑通的中控台项目。
 
 ## 已实现
 
 - `Express + Socket.IO` 服务端
-- `Baileys` 驱动的 `WhatsApp Web` 连接骨架
+- `whatsapp-web.js` 驱动的 `WhatsApp Web` 接管链路
 - `GramJS` 驱动的 `Telegram UserBot` 会话接管与发信骨架
 - 当前交易单 / 资源配置 / 回执文本 / 缺口计算 的内存态服务
 - `REST API` 与静态托管
 - `WhatsApp` 发送队列、随机抖动、自动重连、熔断与状态观测
 - 控制台状态自动落盘，重启后恢复交易单、源头绑定、资源绑定和日志
 - `WhatsApp` 已发现会话自动落盘，重启后保留最近聊天候选
+- 最小访问保护、共享配置服务端化、审计日志落盘
 
 ## 当前 WhatsApp 方案
 
-当前仓库已切换到 `Baileys` 路线，但实现上按“高可用优先”处理，而不是裸连：
-
-- 多文件会话落盘，服务重启后自动恢复
-- 消息发送进入单独队列
-- 发送前自动 `composing`，并加 `500-1500ms` 随机抖动
-- 队列满载保护，避免突发堆积
-- 连续失败自动熔断，防止雪崩式重试
-- 连接关闭后自动重连，并暴露状态接口给控制台
-- 已发现聊天缓存自动落盘，方便后续做一键绑定
+当前仓库生产主链路使用 `whatsapp-web.js`，服务端会持久化会话、发现列表和控制台状态；登录和日常发信都走当前接好的浏览器接管方案。
 
 ## 快速开始
 
@@ -50,6 +43,12 @@ npm run dev
 ```text
 http://localhost:3000/index.html
 ```
+
+## 部署
+
+团队私网部署请直接看：
+
+- [DEPLOYMENT.md](/Users/imlxw/Desktop/业务调度系统/DEPLOYMENT.md)
 
 ## 主要接口
 

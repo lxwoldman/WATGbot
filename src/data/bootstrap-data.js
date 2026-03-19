@@ -15,6 +15,18 @@ export const bootstrapData = {
       text: "韩国K甲组联赛\n江原 v 安阳\n小 2 / 2.5 @ 0.90"
     }
   },
+  consoleSettings: {
+    exchangeRate: 7,
+    specialTarget: 20000,
+    followAmount: 5000,
+    manualAmericas: false,
+    customCommands: [
+      { id: "wait", label: "等等", text: "等等" },
+      { id: "resume", label: "恢复", text: "恢复" },
+      { id: "cancel", label: "取消", text: "取消" },
+      { id: "urge", label: "催单", text: "好了吗" }
+    ]
+  },
   sourceChannels: [
     {
       id: "wa-source-alpha",
@@ -40,6 +52,7 @@ export const bootstrapData = {
       remoteId: "",
       sendEnabled: true,
       canAmericas: true,
+      currency: "U",
       amount: 5000,
       slipCount: 3,
       allocationType: "fixed",
@@ -53,6 +66,7 @@ export const bootstrapData = {
       remoteId: "",
       sendEnabled: false,
       canAmericas: false,
+      currency: "U",
       amount: 0,
       slipCount: 1,
       allocationType: "fixed",
@@ -66,6 +80,7 @@ export const bootstrapData = {
       remoteId: "",
       sendEnabled: true,
       canAmericas: true,
+      currency: "U",
       amount: 4000,
       slipCount: 5,
       allocationType: "fixed",
@@ -79,6 +94,7 @@ export const bootstrapData = {
       remoteId: "",
       sendEnabled: true,
       canAmericas: true,
+      currency: "U",
       amount: 3000,
       slipCount: 2,
       allocationType: "floating",
