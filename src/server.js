@@ -137,7 +137,13 @@ async function gracefulShutdown(signal) {
   logger.info(`Received ${signal}, flushing in-memory state before exit.`);
 
   try {
-    await Promise.allSettled([store.persistNow(), store.flushAudit(), whatsappAdapter.persistDiscoveredChats()]);
+    await Promise.allSettled([
+      store.persistNow(),
+      store.flushAudit(),
+      whatsappAdapter.persistDiscoveredChats(),
+      whatsappAdapter.destroy(),
+      telegramAdapter.disconnectClient?.()
+    ]);
   } finally {
     httpServer.close(() => {
       process.exit(0);

@@ -79,6 +79,17 @@
     }
     .badge.blue { background: var(--blue-light); color: var(--blue); border-color: #b3d8ff; }
     .badge.red { background: var(--red-light); color: var(--red); border-color: #fbc4c4; }
+    .badge.amber { background: #fdf6ec; color: var(--amber); border-color: #f5dab1; }
+
+    .panel-hd-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    body.safety-locked .panel-bd {
+      filter: saturate(0.92);
+    }
 
     /* 表单基础 */
     input, select, textarea {
@@ -292,10 +303,50 @@
     
     .data-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 12px; }
     .data-grid.four { grid-template-columns: 1fr 1fr 0.9fr 0.8fr; }
+    .data-grid.metrics-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      align-items: stretch;
+    }
+    .data-grid.metrics-grid > .data-box {
+      display: grid;
+      grid-template-rows: auto 1fr;
+      gap: 8px;
+      min-height: 112px;
+      padding: 10px 12px;
+    }
+    .data-grid.metrics-grid > .data-box label {
+      margin-bottom: 0;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
     .data-box { border: 1px solid var(--line); border-radius: 4px; padding: 8px; background: #fafafa; }
     .data-box label { font-size: 11px; color: var(--text-muted); display: block; margin-bottom: 4px; }
     .data-box input { border: none; border-bottom: 1px solid var(--line-strong); background: transparent; padding: 2px 0; font-weight: bold; font-size: 14px; border-radius: 0; }
     .data-box select { border: none; border-bottom: 1px solid var(--line-strong); background: transparent; padding: 2px 0; font-weight: bold; font-size: 14px; border-radius: 0; }
+    .metric-values {
+      display: grid;
+      grid-template-rows: repeat(2, minmax(0, 1fr));
+      gap: 0;
+      min-height: 0;
+    }
+    .metric-line {
+      display: flex;
+      align-items: center;
+      min-height: 0;
+      padding: 4px 0;
+      border-bottom: 1px solid var(--line-strong);
+    }
+    .metric-line-value {
+      font-size: 17px;
+      font-weight: 700;
+      line-height: 1.15;
+      letter-spacing: -0.01em;
+    }
+    .metric-line.secondary .metric-line-value {
+      font-size: 14px;
+      opacity: 0.95;
+    }
     .toggle-box {
       display: flex;
       align-items: center;
@@ -331,7 +382,16 @@
     }
     
     .gap-alert { border-color: var(--red); background: var(--red-light); }
-    .gap-alert label, .gap-alert input { color: var(--red); }
+    .gap-alert label, .gap-alert input, .gap-alert .metric-line-value { color: var(--red); }
+    .over-alert {
+      border-color: var(--amber);
+      background: #fdf6ec;
+    }
+    .over-alert label,
+    .over-alert input,
+    .over-alert .metric-line-value {
+      color: var(--amber);
+    }
 
     .core-action-row {
       display: grid;
@@ -407,30 +467,36 @@
 
     /* ======== 右侧：资源区 (完美消除空白) ======== */
     .rc-header {
-      display: grid; grid-template-columns: 118px 70px minmax(108px, 1fr) 74px 108px; gap: 6px;
+      display: grid; grid-template-columns: 104px 96px minmax(136px, 1fr) 74px 104px; gap: 6px;
       font-size: 11px; color: var(--text-muted); font-weight: bold; margin-bottom: 6px; text-align: center;
     }
     
     .rc-row {
-      display: grid; grid-template-columns: 118px 70px minmax(108px, 1fr) 74px 108px; gap: 6px;
+      display: grid; grid-template-columns: 104px 96px minmax(136px, 1fr) 74px 104px; gap: 6px;
       align-items: center; border: 1px solid var(--line); border-radius: 4px;
       padding: 4px 6px; margin-bottom: 4px; background: #fff;
     }
     .rc-row.disabled { opacity: 0.5; background: #f4f4f5; }
+    .rc-row.inactive {
+      opacity: 0.58;
+      background: #f6f7fa;
+      border-style: dashed;
+    }
+    .rc-row.live-dispatch { border-left: 3px solid var(--amber); }
     
     /* 列1：名字与绑定 */
     .rc-id { display: flex; flex-direction: column; gap: 2px; }
     .rc-id input.name { font-weight: bold; border: none; padding: 0; font-size: 12px; background: transparent;}
-    .rc-id input.bind { font-size: 10px; color: var(--text-muted); padding: 2px; border: 1px solid var(--line); }
+    .rc-id input.bind { font-size: 9px; color: var(--text-muted); padding: 2px; border: 1px solid var(--line); }
     
     /* 列2：勾选框 */
-    .rc-chk { display: flex; flex-direction: column; gap: 2px; font-size: 10px; }
-    .rc-chk label { display: flex; align-items: center; gap: 2px; cursor: pointer;}
+    .rc-chk { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 2px 4px; font-size: 10px; }
+    .rc-chk label { display: flex; align-items: center; gap: 2px; cursor: pointer; white-space: nowrap; }
     .rc-chk input { margin: 0; width: auto; }
 
     .rc-amt {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 56px;
+      grid-template-columns: minmax(72px, 1fr) 66px;
       gap: 4px;
       align-items: center;
     }
@@ -466,6 +532,20 @@
     }
     .rc-btn button.delete:hover {
       background: var(--red-light);
+    }
+    .rc-btn button.toggle {
+      grid-column: 1 / -1;
+      font-weight: 700;
+    }
+    .rc-btn button.toggle.disable {
+      border-color: #f5dab1;
+      color: var(--amber);
+      background: #fdf6ec;
+    }
+    .rc-btn button.toggle.enable {
+      border-color: #c2e7b0;
+      color: var(--green);
+      background: #f0f9eb;
     }
 
     /* ======== 回执生成器 ======== */
@@ -717,7 +797,11 @@
   <div class="panel">
     <div class="panel-hd">
       <span>🧠 交易控制中心</span>
-      <span class="badge" id="ticketIdBadge">单号 --</span>
+      <div class="panel-hd-actions">
+        <span class="badge" id="safetyLockBadge">安全锁未开启</span>
+        <button class="btn" id="safetyLockToggleBtn" data-lock-bypass="true" style="width: auto; padding: 6px 10px;">开启安全锁</button>
+        <span class="badge" id="ticketIdBadge">单号 --</span>
+      </div>
     </div>
     <div class="panel-bd">
 
@@ -777,18 +861,39 @@
         <span id="targetHintText">常规赛额度 + 跟注额</span>
       </div>
 
-      <div class="data-grid">
+      <div class="data-grid metrics-grid">
         <div class="data-box">
-          <label>已分配额度 (USD)</label>
-          <input type="number" id="targetAllocated" value="0" readonly>
+          <label>目标金额</label>
+          <div class="metric-values">
+            <div class="metric-line">
+              <span class="metric-line-value" id="effectiveTarget">0.00U</span>
+            </div>
+            <div class="metric-line secondary">
+              <span class="metric-line-value" id="effectiveTargetRmb">0.00R</span>
+            </div>
+          </div>
         </div>
         <div class="data-box">
-          <label>生效目标 (USD)</label>
-          <input type="number" id="effectiveTarget" value="0" readonly>
+          <label>已分配额度</label>
+          <div class="metric-values">
+            <div class="metric-line">
+              <span class="metric-line-value" id="targetAllocated">0.00U</span>
+            </div>
+            <div class="metric-line secondary">
+              <span class="metric-line-value" id="targetAllocatedRmb">0.00R</span>
+            </div>
+          </div>
         </div>
         <div class="data-box gap-alert" id="gapBox">
-          <label>未分配缺口 (USD)</label>
-          <input type="number" id="targetGap" value="0" readonly>
+          <label id="gapBoxLabel">未分配缺口</label>
+          <div class="metric-values">
+            <div class="metric-line">
+              <span class="metric-line-value" id="targetGap">0.00U</span>
+            </div>
+            <div class="metric-line secondary">
+              <span class="metric-line-value" id="targetGapRmb">0.00R</span>
+            </div>
+          </div>
         </div>
       </div>
       <div class="core-action-row">
@@ -816,7 +921,11 @@
   <div class="panel">
     <div class="panel-hd">
       <span>👥 资源调度 (全渠道)</span>
-      <span class="badge blue" id="sumConfirmed">已分配: 0</span>
+      <div class="panel-hd-actions">
+        <button class="btn" id="resourceSelectAllBtn" style="width: auto; padding: 6px 10px;">全选</button>
+        <button class="btn" id="resourceDeselectAllBtn" style="width: auto; padding: 6px 10px;">取消全选</button>
+        <span class="badge blue" id="sumConfirmed">已分配: 0</span>
+      </div>
     </div>
     <div class="panel-bd" style="padding: 8px;">
 
@@ -965,7 +1074,7 @@
     </div>
     <div class="modal-bd" id="commandEditorList"></div>
     <div class="modal-ft">
-      <div class="ops-note">新增、修改、删除后点击保存，当前配置只保存在浏览器本地。</div>
+      <div class="ops-note">新增、修改、删除后点击保存，当前配置会同步保存到本机状态文件。</div>
       <div class="actions">
         <button class="btn" id="commandAddBtn">新增指令</button>
         <button class="btn primary" id="commandSaveBtn">保存配置</button>
@@ -975,7 +1084,7 @@
 </div>
 
 <script src="/socket.io/socket.io.js"></script>
-<script src="/app-client.js"></script>
+<script src="/app-client.js?v=20260320-8"></script>
 
 </body>
 </html>

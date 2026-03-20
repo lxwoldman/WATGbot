@@ -8,10 +8,17 @@ export function computeFinalOdds(rawOdds, rebate) {
   return Math.max(finalOdds, 0);
 }
 
-export function computeAllocated(resources) {
+export function computeAllocated(resources, exchangeRate = 1) {
   return resources
-    .filter((resource) => resource.sendEnabled)
-    .reduce((sum, resource) => sum + Number(resource.amount || 0), 0);
+    .filter((resource) => resource.enabled !== false && resource.includeInAllocation)
+    .reduce((sum, resource) => {
+      const amount = Number(resource.amount || 0);
+      if (resource.currency === "RMB") {
+        const rate = Number(exchangeRate || 0) || 1;
+        return sum + amount / rate;
+      }
+      return sum + amount;
+    }, 0);
 }
 
 export function computeGap(targetTotal, allocated) {

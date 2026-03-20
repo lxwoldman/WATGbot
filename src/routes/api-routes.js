@@ -64,6 +64,9 @@ function sanitizeConsoleSettingsPatch(payload = {}) {
   if ("manualAmericas" in payload) {
     patch.manualAmericas = sanitizeBoolean(payload.manualAmericas);
   }
+  if ("safetyLock" in payload) {
+    patch.safetyLock = sanitizeBoolean(payload.safetyLock);
+  }
   if ("customCommands" in payload) {
     const commands = sanitizeCustomCommands(payload.customCommands);
     if (commands) {
@@ -120,8 +123,17 @@ function sanitizeResourcePatch(payload = {}) {
   if ("note" in payload) {
     patch.note = sanitizeString(payload.note);
   }
+  if ("enabled" in payload) {
+    patch.enabled = sanitizeBoolean(payload.enabled);
+  }
   if ("sendEnabled" in payload) {
     patch.sendEnabled = sanitizeBoolean(payload.sendEnabled);
+  }
+  if ("includeInAllocation" in payload) {
+    patch.includeInAllocation = sanitizeBoolean(payload.includeInAllocation);
+  }
+  if ("liveDispatch" in payload) {
+    patch.liveDispatch = sanitizeBoolean(payload.liveDispatch);
   }
   if ("canAmericas" in payload) {
     patch.canAmericas = sanitizeBoolean(payload.canAmericas);
@@ -172,6 +184,34 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
       details
     });
   }
+
+  function isSafetyLockUnlockPatch(req) {
+    if (req.method !== "PATCH" || req.path !== "/console-settings") {
+      return false;
+    }
+
+    const patch = sanitizeConsoleSettingsPatch(req.body || {});
+    return Object.keys(patch).length === 1 && patch.safetyLock === false;
+  }
+
+  router.use((req, res, next) => {
+    if (!store.state.consoleSettings?.safetyLock) {
+      next();
+      return;
+    }
+
+    if (req.method === "GET" || req.method === "HEAD") {
+      next();
+      return;
+    }
+
+    if (isSafetyLockUnlockPatch(req)) {
+      next();
+      return;
+    }
+
+    fail(res, "Safety lock is enabled. Unlock before operating.", 423);
+  });
 
   async function buildRecentChats(limit = 80) {
     const [whatsappChats, telegramDialogs] = await Promise.all([

@@ -49,6 +49,7 @@ function normalizeConsoleSettings(settings = {}) {
     specialTarget: Number(settings.specialTarget ?? defaultSettings.specialTarget ?? 20000) || 0,
     followAmount: Number(settings.followAmount ?? defaultSettings.followAmount ?? 5000) || 0,
     manualAmericas: Boolean(settings.manualAmericas ?? defaultSettings.manualAmericas ?? false),
+    safetyLock: Boolean(settings.safetyLock ?? defaultSettings.safetyLock ?? false),
     customCommands: customCommands.length
       ? customCommands
       : (defaultSettings.customCommands || [])
@@ -58,9 +59,13 @@ function normalizeConsoleSettings(settings = {}) {
 }
 
 function normalizeResource(resource = {}) {
+  const liveDispatch = Boolean(resource.liveDispatch);
   return {
     ...resource,
-    sendEnabled: Boolean(resource.sendEnabled),
+    enabled: resource.enabled !== false,
+    sendEnabled: liveDispatch ? false : Boolean(resource.sendEnabled),
+    includeInAllocation: Boolean(resource.includeInAllocation ?? resource.sendEnabled),
+    liveDispatch,
     canAmericas: Boolean(resource.canAmericas),
     currency: resource.currency === "RMB" ? "RMB" : "U",
     amount: Number(resource.amount ?? 0) || 0,
@@ -136,10 +141,11 @@ export class StoreService {
   getSnapshot() {
     const resources = this.state.resources;
     const ticket = this.state.currentTicket;
+    const consoleSettings = normalizeConsoleSettings(this.state.consoleSettings);
     const rawOdds = ticket.rawOdds || parseOddsFromMarket(ticket.marketText);
     const finalOdds = computeFinalOdds(rawOdds, ticket.rebate);
     const targetTotal = computeTargetTotal(ticket);
-    const allocated = computeAllocated(resources);
+    const allocated = computeAllocated(resources, consoleSettings.exchangeRate);
     const gap = computeGap(targetTotal, allocated);
 
     return {
@@ -151,7 +157,7 @@ export class StoreService {
         allocated,
         gap
       },
-      consoleSettings: clone(this.state.consoleSettings || normalizeConsoleSettings()),
+      consoleSettings: clone(consoleSettings),
       sourceChannels: clone(this.state.sourceChannels),
       resources: clone(resources),
       logs: clone(this.logs)
@@ -271,7 +277,10 @@ export class StoreService {
       bindingLabel: note || name || normalizedRemoteId,
       platform,
       remoteId: normalizedRemoteId,
+      enabled: true,
       sendEnabled: true,
+      includeInAllocation: true,
+      liveDispatch: false,
       canAmericas: true,
       currency: "U",
       amount: 0,

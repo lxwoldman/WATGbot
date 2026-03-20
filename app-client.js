@@ -12,6 +12,7 @@ const defaultConsoleSettings = {
   specialTarget: 20000,
   followAmount: 5000,
   manualAmericas: false,
+  safetyLock: false,
   customCommands: defaultCustomCommands
 };
 
@@ -177,17 +178,22 @@ const state = {
   lastSourceFingerprint: "",
   latestFeedbackPrice: "",
   latestSupplierRepriceText: "",
+  americasAutoDisabled: {},
+  lastResourcePresetKey: "",
   customCommands: defaultCustomCommands.map((item, index) => normalizeCommand(item, index)),
   resourceCurrencies: { ...legacySharedSettings.resourceCurrencies },
   exchangeRate: defaultConsoleSettings.exchangeRate,
   specialTarget: defaultConsoleSettings.specialTarget,
   followAmount: defaultConsoleSettings.followAmount,
   manualAmericas: defaultConsoleSettings.manualAmericas,
+  safetyLock: defaultConsoleSettings.safetyLock,
   lastStableTicket: loadJson(storageKeys.stableTicket, null),
   receiptOddsManual: false,
   sharedSettingsHydrated: false,
   legacySettingsMigrated: false,
   consoleSettingsUnsupportedNotified: false,
+  lastSafetyLockNoticeAt: 0,
+  pendingConsoleSettingsPatch: {},
   integration: {
     whatsapp: null,
     telegram: null
@@ -220,10 +226,18 @@ const els = {
   exchangeRate: document.getElementById("exchangeRate"),
   americasOrderCheckbox: document.getElementById("americasOrderCheckbox"),
   targetAllocated: document.getElementById("targetAllocated"),
+  targetAllocatedRmb: document.getElementById("targetAllocatedRmb"),
   effectiveTarget: document.getElementById("effectiveTarget"),
+  effectiveTargetRmb: document.getElementById("effectiveTargetRmb"),
   targetGap: document.getElementById("targetGap"),
+  targetGapRmb: document.getElementById("targetGapRmb"),
+  gapBoxLabel: document.getElementById("gapBoxLabel"),
   targetHintText: document.getElementById("targetHintText"),
   gapBox: document.getElementById("gapBox"),
+  safetyLockBadge: document.getElementById("safetyLockBadge"),
+  safetyLockToggleBtn: document.getElementById("safetyLockToggleBtn"),
+  resourceSelectAllBtn: document.getElementById("resourceSelectAllBtn"),
+  resourceDeselectAllBtn: document.getElementById("resourceDeselectAllBtn"),
   sumConfirmed: document.getElementById("sumConfirmed"),
   corePrepBtn: document.getElementById("corePrepBtn"),
   coreMarketBtn: document.getElementById("coreMarketBtn"),
@@ -352,6 +366,58 @@ function notify(text, tone = "", toast = false) {
   }
 }
 
+function isSafetyLockError(error) {
+  return Number(error?.status) === 423 || /Safety lock/i.test(String(error?.message || ""));
+}
+
+function maybeNotifySafetyLock() {
+  const now = Date.now();
+  if (now - state.lastSafetyLockNoticeAt < 1200) {
+    return;
+  }
+  state.lastSafetyLockNoticeAt = now;
+  notify("安全锁已开启，先解锁再操作", "red", true);
+}
+
+function isSafetyLockBypassTarget(target) {
+  return target instanceof Element && Boolean(target.closest("[data-lock-bypass='true']"));
+}
+
+function handleSafetyLockGuard(event) {
+  if (!state.safetyLock || isSafetyLockBypassTarget(event.target)) {
+    return;
+  }
+
+  const interactiveTarget =
+    event.target instanceof Element
+      ? event.target.closest("button, input, select, textarea, label, a, [role='button'], [contenteditable='true']")
+      : null;
+
+  if (!interactiveTarget) {
+    return;
+  }
+
+  event.preventDefault();
+  event.stopPropagation();
+
+  if (typeof event.stopImmediatePropagation === "function") {
+    event.stopImmediatePropagation();
+  }
+
+  maybeNotifySafetyLock();
+}
+
+function renderSafetyLockState() {
+  document.body.classList.toggle("safety-locked", Boolean(state.safetyLock));
+  setBadge(els.safetyLockBadge, state.safetyLock ? "安全锁已开启" : "安全锁未开启", state.safetyLock ? "amber" : "");
+  els.safetyLockToggleBtn.textContent = state.safetyLock ? "解除安全锁" : "开启安全锁";
+  els.safetyLockToggleBtn.classList.toggle("danger", Boolean(state.safetyLock));
+
+  if (state.safetyLock && document.activeElement instanceof HTMLElement && !isSafetyLockBypassTarget(document.activeElement)) {
+    document.activeElement.blur();
+  }
+}
+
 function getExchangeRateValue() {
   return Math.max(Number(els.exchangeRate.value || state.exchangeRate || 7), 0.01);
 }
@@ -392,13 +458,25 @@ function splitTextLines(text) {
     .filter(Boolean);
 }
 
+function stripLineOrdinal(line) {
+  return String(line || "")
+    .replace(/^\s*\d+\s*[.、)\-]\s*/, "")
+    .trim();
+}
+
+function looksLikeTeamsLine(line) {
+  return /\bv(?:s)?\b/i.test(String(line || ""));
+}
+
 function parseRawOdds(text) {
   const matches = [...String(text || "").matchAll(/[＠@]\s*([0-9]+(?:\.[0-9]+)?)/g)];
   return matches.length ? matches[matches.length - 1][1] : "";
 }
 
 function parseSourceMessage(text) {
-  const lines = splitTextLines(text);
+  const lines = splitTextLines(text)
+    .map((line) => stripLineOrdinal(line))
+    .filter(Boolean);
 
   if (!lines.length) {
     return {
@@ -499,25 +577,36 @@ function isStructuredMarketText(text) {
 function analyzeSourceMessage(text) {
   const parsed = parseSourceMessage(text);
   const lines = splitTextLines(text);
-  const isStructuredTicket = Boolean(
-    lines.length >= 3 &&
-      parsed.league &&
-      parsed.teams &&
-      parsed.marketText &&
-      isStructuredMarketText(parsed.marketText)
-  );
+  const hasTeams = Boolean(parsed.teams && looksLikeTeamsLine(parsed.teams));
+  const hasStructuredMarket = Boolean(parsed.marketText && isStructuredMarketText(parsed.marketText));
+  const hasConfirmationAmount = /确\s*\d+/i.test(String(text || ""));
+  const isPrepTicket = Boolean(lines.length === 2 && parsed.league && hasTeams && !hasStructuredMarket);
+  const isMarketTicket = Boolean(parsed.league && hasTeams && hasStructuredMarket && !hasConfirmationAmount);
+  const isSourceReceipt = Boolean(parsed.league && hasTeams && hasStructuredMarket && hasConfirmationAmount);
+  const messageType = isPrepTicket
+    ? "prep_ticket"
+    : isMarketTicket
+      ? "market_ticket"
+      : isSourceReceipt
+        ? "source_receipt"
+        : "chat";
+  const feedbackSignal = messageType === "chat" ? extractFeedbackSignal(text) : null;
+  const isStructuredTicket = messageType === "market_ticket";
+  const isAutoExtractable = messageType === "prep_ticket" || messageType === "market_ticket";
 
   return {
     lines,
     parsed,
+    messageType,
     isStructuredTicket,
-    feedbackSignal: isStructuredTicket ? null : extractFeedbackSignal(text)
+    isAutoExtractable,
+    feedbackSignal
   };
 }
 
 function buildTicketDraftFromSourceText(text, baseTicket = {}) {
   const sourceAnalysis = analyzeSourceMessage(text);
-  if (!sourceAnalysis.isStructuredTicket) return null;
+  if (sourceAnalysis.messageType !== "market_ticket") return null;
 
   return normalizeTicketDraft({
     sourceChannelId: baseTicket.sourceChannelId || "",
@@ -575,7 +664,14 @@ function getProtectedConsoleTicket(ticket, sourceAnalysis, logs) {
     return normalized;
   }
 
-  if (sourceAnalysis?.isStructuredTicket) {
+  if (normalized.league && normalized.teams && !normalized.marketText) {
+    return normalized;
+  }
+
+  if (
+    sourceAnalysis?.messageType === "market_ticket" ||
+    (sourceAnalysis?.messageType === "prep_ticket" && normalized.league && normalized.teams)
+  ) {
     return normalized;
   }
 
@@ -642,6 +738,7 @@ function normalizeSharedSettings(settings = {}) {
     specialTarget: Number(settings.specialTarget ?? defaultConsoleSettings.specialTarget) || 0,
     followAmount: Number(settings.followAmount ?? defaultConsoleSettings.followAmount) || 0,
     manualAmericas: Boolean(settings.manualAmericas ?? defaultConsoleSettings.manualAmericas),
+    safetyLock: Boolean(settings.safetyLock ?? defaultConsoleSettings.safetyLock),
     customCommands: commands.length
       ? commands
       : defaultConsoleSettings.customCommands.map((item, index) => normalizeCommand(item, index))
@@ -666,6 +763,7 @@ function sameSharedSettings(left, right) {
     Number(left.specialTarget) === Number(right.specialTarget) &&
     Number(left.followAmount) === Number(right.followAmount) &&
     Boolean(left.manualAmericas) === Boolean(right.manualAmericas) &&
+    Boolean(left.safetyLock) === Boolean(right.safetyLock) &&
     sameCommandSet(left.customCommands, right.customCommands)
   );
 }
@@ -711,6 +809,7 @@ function applySharedSettings(snapshot) {
   state.specialTarget = sharedSettings.specialTarget;
   state.followAmount = sharedSettings.followAmount;
   state.manualAmericas = sharedSettings.manualAmericas;
+  state.safetyLock = sharedSettings.safetyLock;
   state.resourceCurrencies = resolveResourceCurrencies(snapshot?.resources || []);
   state.sharedSettingsHydrated = true;
 }
@@ -721,12 +820,25 @@ function buildConsoleSettingsPayload() {
     specialTarget: state.specialTarget,
     followAmount: state.followAmount,
     manualAmericas: state.manualAmericas,
+    safetyLock: state.safetyLock,
     customCommands: state.customCommands.map((command) => ({
       id: command.id,
       label: command.label,
       text: command.text
     }))
   };
+}
+
+function applyConsoleSettingsPayload(settings) {
+  const normalized = normalizeSharedSettings(settings || {});
+  state.customCommands = normalized.customCommands;
+  state.exchangeRate = normalized.exchangeRate;
+  state.specialTarget = normalized.specialTarget;
+  state.followAmount = normalized.followAmount;
+  state.manualAmericas = normalized.manualAmericas;
+  state.safetyLock = normalized.safetyLock;
+  renderPersistentControls();
+  renderCustomCommands();
 }
 
 function notifySharedConfigUnavailable(error) {
@@ -742,12 +854,14 @@ function notifySharedConfigUnavailable(error) {
   return true;
 }
 
-async function persistConsoleSettingsNow(successText = "") {
+async function persistConsoleSettingsNow(successText = "", patchOverride = null) {
+  const payload = patchOverride || buildConsoleSettingsPayload();
   try {
-    await api("/api/console-settings", {
+    const updated = await api("/api/console-settings", {
       method: "PATCH",
-      body: buildConsoleSettingsPayload()
+      body: payload
     });
+    applyConsoleSettingsPayload(updated);
   } catch (error) {
     if (notifySharedConfigUnavailable(error)) {
       return false;
@@ -763,12 +877,31 @@ async function persistConsoleSettingsNow(successText = "") {
 }
 
 const scheduleConsoleSettingsSync = debounce(async () => {
+  const patch = { ...state.pendingConsoleSettingsPatch };
+  state.pendingConsoleSettingsPatch = {};
+
+  if (!Object.keys(patch).length) {
+    return;
+  }
+
+  if (state.safetyLock && !(Object.keys(patch).length === 1 && patch.safetyLock === false)) {
+    return;
+  }
+
   try {
-    await persistConsoleSettingsNow();
+    await persistConsoleSettingsNow("", patch);
   } catch (error) {
     notify(error.message, "red", true);
   }
 }, 300);
+
+function queueConsoleSettingsPatch(patch = {}) {
+  state.pendingConsoleSettingsPatch = {
+    ...state.pendingConsoleSettingsPatch,
+    ...patch
+  };
+  scheduleConsoleSettingsSync();
+}
 
 async function migrateLegacySharedState(snapshot) {
   if (state.legacySettingsMigrated || !hasLegacySharedOverrides()) {
@@ -808,6 +941,7 @@ async function migrateLegacySharedState(snapshot) {
           specialTarget: legacySharedSettings.specialTarget,
           followAmount: legacySharedSettings.followAmount,
           manualAmericas: legacySharedSettings.manualAmericas,
+          safetyLock: false,
           customCommands: legacySharedSettings.customCommands
         }
       });
@@ -913,21 +1047,188 @@ function toUsd(amount, currency) {
   return numericAmount;
 }
 
+function isResourceEnabled(row) {
+  return row?.dataset.resourceEnabled !== "false";
+}
+
+function isResourceRowOperational(row) {
+  if (!isResourceEnabled(row)) {
+    return false;
+  }
+  return Boolean(
+    row.querySelector(".resource-send")?.checked ||
+      row.querySelector(".resource-allocate")?.checked ||
+      row.querySelector(".resource-live")?.checked
+  );
+}
+
+function isAmericasBlockedRow(row) {
+  if (!isResourceEnabled(row)) {
+    return false;
+  }
+  return Boolean(isAmericasOrder() && !row.querySelector(".resource-americas")?.checked);
+}
+
+function rememberAmericasAutoDisabledRow(row) {
+  const resourceId = row.dataset.resourceId;
+  if (!resourceId || state.americasAutoDisabled[resourceId]) return;
+
+  state.americasAutoDisabled[resourceId] = {
+    sendEnabled: Boolean(row.querySelector(".resource-send")?.checked),
+    includeInAllocation: Boolean(row.querySelector(".resource-allocate")?.checked)
+  };
+}
+
+function forgetAmericasAutoDisabledRow(resourceId) {
+  if (!resourceId) return;
+  delete state.americasAutoDisabled[resourceId];
+}
+
+function buildResourcePresetKey(league, teams) {
+  const normalizedLeague = String(league || "").trim();
+  const normalizedTeams = String(teams || "").trim();
+  if (!normalizedLeague || !normalizedTeams) {
+    return "";
+  }
+  return `${normalizedLeague}||${normalizedTeams}||${isAmericasLeague(normalizedLeague) ? "americas" : "regular"}`;
+}
+
+function applyResourcePresetForCurrentOrder(league, teams) {
+  const presetKey = buildResourcePresetKey(league, teams);
+  if (!presetKey || presetKey === state.lastResourcePresetKey) {
+    return;
+  }
+
+  state.lastResourcePresetKey = presetKey;
+  const americasOrder = isAmericasLeague(league);
+  const rows = Array.from(els.resourceContainer.querySelectorAll(".rc-row"));
+
+  rows.forEach((row) => {
+    const resourceId = row.dataset.resourceId;
+    const sendInput = row.querySelector(".resource-send");
+    const allocationInput = row.querySelector(".resource-allocate");
+    const liveDispatchInput = row.querySelector(".resource-live");
+    const canAmericasInput = row.querySelector(".resource-americas");
+    if (!resourceId || !sendInput || !allocationInput) return;
+    if (!isResourceEnabled(row)) {
+      updateResourceRowState(row);
+      return;
+    }
+
+    const isLiveDispatch = Boolean(liveDispatchInput?.checked);
+    const canAmericas = Boolean(canAmericasInput?.checked);
+    const nextSend = isLiveDispatch ? false : americasOrder ? canAmericas : true;
+    const nextAllocate = isLiveDispatch ? !americasOrder || canAmericas : americasOrder ? canAmericas : true;
+
+    const changed = sendInput.checked !== nextSend || allocationInput.checked !== nextAllocate;
+    sendInput.checked = nextSend;
+    allocationInput.checked = nextAllocate;
+    updateResourceRowState(row);
+
+    if (changed) {
+      scheduleResourceSync(resourceId, collectResourcePatch(row));
+    }
+  });
+}
+
 function updateResourceRowState(row) {
   const sendInput = row.querySelector(".resource-send");
+  const allocationInput = row.querySelector(".resource-allocate");
+  const liveDispatchInput = row.querySelector(".resource-live");
+  const americasInput = row.querySelector(".resource-americas");
   const amountInput = row.querySelector(".resource-amount");
-  const enabled = Boolean(sendInput?.checked);
+  const currencyInput = row.querySelector(".resource-currency");
+  const slipInput = row.querySelector(".resource-slip");
+  const typeInput = row.querySelector(".resource-type");
+  const nameInput = row.querySelector(".resource-name");
+  const bindInput = row.querySelector(".resource-bind");
+  const actionButtons = row.querySelectorAll("button[data-resource-action]");
+  const resourceEnabled = isResourceEnabled(row);
+  const isLiveDispatch = Boolean(liveDispatchInput?.checked);
+  const isAmericasBlocked = isAmericasBlockedRow(row);
+
+  if (!resourceEnabled) {
+    row.classList.add("inactive", "disabled");
+    row.classList.remove("live-dispatch");
+    [
+      sendInput,
+      allocationInput,
+      liveDispatchInput,
+      americasInput,
+      amountInput,
+      currencyInput,
+      slipInput,
+      typeInput,
+      nameInput,
+      bindInput
+    ].forEach((element) => {
+      if (element) {
+        element.disabled = true;
+      }
+    });
+    actionButtons.forEach((button) => {
+      button.disabled = button.dataset.resourceAction !== "toggle-enabled";
+    });
+    return;
+  }
+
+  [
+    sendInput,
+    liveDispatchInput,
+    americasInput,
+    amountInput,
+    currencyInput,
+    slipInput,
+    typeInput,
+    nameInput,
+    bindInput
+  ].forEach((element) => {
+    if (element) {
+      element.disabled = false;
+    }
+  });
+  actionButtons.forEach((button) => {
+    button.disabled = false;
+  });
+
+  if (allocationInput) {
+    if (isLiveDispatch && !isAmericasBlocked) {
+      allocationInput.checked = true;
+    } else if (isLiveDispatch && isAmericasBlocked) {
+      allocationInput.checked = false;
+    }
+  }
+  if (isLiveDispatch && sendInput) {
+    sendInput.checked = false;
+  }
+
+  const enabled = isResourceRowOperational(row);
+  row.classList.remove("inactive");
   row.classList.toggle("disabled", !enabled);
+  row.classList.toggle("live-dispatch", isLiveDispatch);
   if (amountInput) {
     amountInput.disabled = !enabled;
+  }
+  if (allocationInput) {
+    allocationInput.disabled = Boolean(
+      isLiveDispatch ||
+        (!sendInput?.checked && !liveDispatchInput?.checked && isAmericasBlocked)
+    );
   }
 }
 
 function collectResourcePatch(row) {
+  const liveDispatch = Boolean(row.querySelector(".resource-live")?.checked);
+  const includeInAllocation = liveDispatch
+    ? !isAmericasBlockedRow(row)
+    : Boolean(row.querySelector(".resource-allocate")?.checked);
   return {
     name: row.querySelector(".resource-name")?.value.trim() || "",
     remoteId: row.querySelector(".resource-bind")?.value.trim() || "",
-    sendEnabled: Boolean(row.querySelector(".resource-send")?.checked),
+    enabled: isResourceEnabled(row),
+    sendEnabled: liveDispatch ? false : Boolean(row.querySelector(".resource-send")?.checked),
+    includeInAllocation,
+    liveDispatch,
     canAmericas: Boolean(row.querySelector(".resource-americas")?.checked),
     amount: Number(row.querySelector(".resource-amount")?.value || 0),
     slipCount: Number(row.querySelector(".resource-slip")?.value || 0),
@@ -941,27 +1242,54 @@ function applyAmericasConstraints() {
 
   document.querySelectorAll(".rc-row").forEach((row) => {
     const sendInput = row.querySelector(".resource-send");
+    const allocationInput = row.querySelector(".resource-allocate");
     const canAmericasInput = row.querySelector(".resource-americas");
-    if (!sendInput || !canAmericasInput) return;
+    if (!sendInput || !allocationInput || !canAmericasInput) return;
+    if (!isResourceEnabled(row)) {
+      updateResourceRowState(row);
+      return;
+    }
+    const resourceId = row.dataset.resourceId;
 
-    if (americasOrder && !canAmericasInput.checked && sendInput.checked) {
+    if (americasOrder && !canAmericasInput.checked && (sendInput.checked || allocationInput.checked)) {
+      rememberAmericasAutoDisabledRow(row);
       sendInput.checked = false;
-      const resourceId = row.dataset.resourceId;
+      allocationInput.checked = false;
       if (resourceId) {
         scheduleResourceSync(resourceId, collectResourcePatch(row));
       }
+    }
+
+    if (!americasOrder && resourceId && state.americasAutoDisabled[resourceId]) {
+      const previous = state.americasAutoDisabled[resourceId];
+      if (!row.querySelector(".resource-live")?.checked) {
+        sendInput.checked = previous.sendEnabled;
+      }
+      allocationInput.checked = previous.includeInAllocation;
+      forgetAmericasAutoDisabledRow(resourceId);
+      scheduleResourceSync(resourceId, collectResourcePatch(row));
     }
 
     updateResourceRowState(row);
   });
 }
 
-function renderTargetHint(effectiveTarget, allocated, gap) {
-  if (isAmericasOrder()) {
-    els.targetHintText.textContent = `特殊赛额度 + 跟注额 = ${formatMoney(effectiveTarget)} USD，缺口 ${formatMoney(gap)} USD`;
-  } else {
-    els.targetHintText.textContent = `常规赛额度 + 跟注额 = ${formatMoney(effectiveTarget)} USD，已分配 ${formatMoney(allocated)} USD`;
+function renderTargetHint(effectiveTarget, allocated, gap, over) {
+  const targetBaseText = isAmericasOrder()
+    ? `特殊赛额度 + 跟注额 = ${formatMoney(effectiveTarget)} USD`
+    : `常规赛额度 + 跟注额 = ${formatMoney(effectiveTarget)} USD`;
+
+  if (over > 0) {
+    els.targetHintText.textContent = `${targetBaseText}，超出 ${formatMoney(over)} USD`;
+    return;
   }
+
+  if (gap > 0) {
+    els.targetHintText.textContent = `${targetBaseText}，缺口 ${formatMoney(gap)} USD`;
+    return;
+  }
+
+  els.targetHintText.textContent = `${targetBaseText}，已分配 ${formatMoney(allocated)} USD`;
 }
 
 function syncReceiptOddsFromCalculated(force = false) {
@@ -1009,7 +1337,8 @@ function calculateLocal() {
 
   let allocated = 0;
   document.querySelectorAll(".rc-row").forEach((row) => {
-    if (!row.querySelector(".resource-send")?.checked) return;
+    if (!isResourceEnabled(row)) return;
+    if (!row.querySelector(".resource-allocate")?.checked) return;
     const amount = Number(row.querySelector(".resource-amount")?.value || 0);
     const currency = row.querySelector(".resource-currency")?.value || "U";
     allocated += toUsd(amount, currency);
@@ -1022,15 +1351,48 @@ function calculateLocal() {
     ? Math.max(specialTarget + followAmount, 0)
     : Math.max(regularTarget + followAmount, 0);
   const gap = Math.max(effectiveTarget - allocated, 0);
+  const over = Math.max(allocated - effectiveTarget, 0);
+  const exchangeRate = getExchangeRateValue();
+  const effectiveTargetRmb = effectiveTarget * exchangeRate;
+  const allocatedRmb = allocated * exchangeRate;
+  const gapRmb = gap * exchangeRate;
+  const overRmb = over * exchangeRate;
+  const displayGap = over > 0 ? over : gap;
+  const displayGapRmb = over > 0 ? overRmb : gapRmb;
 
-  els.targetAllocated.value = formatMoney(allocated);
-  els.effectiveTarget.value = formatMoney(effectiveTarget);
-  els.targetGap.value = formatMoney(gap);
+  els.targetAllocated.textContent = `${formatMoney(allocated)}U`;
+  els.targetAllocated.dataset.usd = String(allocated);
+  if (els.targetAllocatedRmb) {
+    els.targetAllocatedRmb.textContent = `${formatMoney(allocatedRmb)}R`;
+  }
+  els.effectiveTarget.textContent = `${formatMoney(effectiveTarget)}U`;
+  els.effectiveTarget.dataset.usd = String(effectiveTarget);
+  if (els.effectiveTargetRmb) {
+    els.effectiveTargetRmb.textContent = `${formatMoney(effectiveTargetRmb)}R`;
+  }
+  if (els.gapBoxLabel) {
+    els.gapBoxLabel.textContent = over > 0 ? "超出额度" : "未分配缺口";
+  }
+  els.targetGap.textContent = `${formatMoney(displayGap)}U`;
+  els.targetGap.dataset.usd = String(displayGap);
+  if (els.targetGapRmb) {
+    els.targetGapRmb.textContent = `${formatMoney(displayGapRmb)}R`;
+  }
   els.sumConfirmed.textContent = `已分配: ${formatMoney(allocated)}U`;
-  els.gapBox.className = gap > 0 ? "data-box gap-alert" : "data-box";
-  els.gapBox.style.background = gap > 0 ? "" : "#f0f9eb";
-  els.gapBox.style.borderColor = gap > 0 ? "" : "#e1f3d8";
-  renderTargetHint(effectiveTarget, allocated, gap);
+  if (over > 0) {
+    els.gapBox.className = "data-box over-alert";
+    els.gapBox.style.background = "";
+    els.gapBox.style.borderColor = "";
+  } else if (gap > 0) {
+    els.gapBox.className = "data-box gap-alert";
+    els.gapBox.style.background = "";
+    els.gapBox.style.borderColor = "";
+  } else {
+    els.gapBox.className = "data-box";
+    els.gapBox.style.background = "#f0f9eb";
+    els.gapBox.style.borderColor = "#e1f3d8";
+  }
+  renderTargetHint(effectiveTarget, allocated, gap, over);
 
   updateReceiptText();
 }
@@ -1080,12 +1442,25 @@ function renderResources(resources) {
     return;
   }
 
-  const html = resources
+  const orderedResources = resources
+    .map((resource, index) => ({ resource, index }))
+    .sort((left, right) => {
+      const leftEnabled = left.resource.enabled !== false;
+      const rightEnabled = right.resource.enabled !== false;
+      if (leftEnabled === rightEnabled) {
+        return left.index - right.index;
+      }
+      return leftEnabled ? -1 : 1;
+    })
+    .map((entry) => entry.resource);
+
+  const html = orderedResources
     .map((resource) => {
-      const disabled = !resource.sendEnabled;
+      const inactive = resource.enabled === false;
+      const disabled = inactive || (!resource.sendEnabled && !resource.includeInAllocation && !resource.liveDispatch);
       const currency = getResourceCurrency(resource.id);
       return `
-        <div class="rc-row${disabled ? " disabled" : ""}" data-resource-id="${resource.id}">
+        <div class="rc-row${disabled ? " disabled" : ""}${inactive ? " inactive" : ""}${resource.liveDispatch && !inactive ? " live-dispatch" : ""}" data-resource-id="${resource.id}" data-resource-enabled="${inactive ? "false" : "true"}">
           <div class="rc-id">
             <input class="name resource-name" value="${escapeHtml(resource.name || "")}">
             <input class="bind resource-bind" value="${escapeHtml(
@@ -1097,10 +1472,16 @@ function renderResources(resources) {
           <div class="rc-chk">
             <label><input type="checkbox" class="resource-send" ${
               resource.sendEnabled ? "checked" : ""
-            }> 可发送</label>
+            }> 发送</label>
+            <label><input type="checkbox" class="resource-allocate" ${
+              resource.includeInAllocation ? "checked" : ""
+            }> 计额</label>
+            <label><input type="checkbox" class="resource-live" ${
+              resource.liveDispatch ? "checked" : ""
+            }> 连麦</label>
             <label><input type="checkbox" class="resource-americas" ${
               resource.canAmericas ? "checked" : ""
-            }> 可接美洲</label>
+            }> 美洲</label>
           </div>
           <div class="rc-amt">
             <input type="number" class="resource-amount" value="${resource.amount ?? 0}" ${
@@ -1121,6 +1502,7 @@ function renderResources(resources) {
             </select>
           </div>
           <div class="rc-btn">
+            <button data-resource-action="toggle-enabled" class="toggle ${inactive ? "enable" : "disable"}">${inactive ? "启用" : "停用"}</button>
             <button data-resource-action="prep">预备</button>
             <button data-resource-action="market">盘口</button>
             <button data-resource-action="receipt">回执</button>
@@ -1132,12 +1514,12 @@ function renderResources(resources) {
     .join("");
 
   els.resourceContainer.innerHTML = html;
-  els.recTarget.innerHTML = resources
+  els.recTarget.innerHTML = orderedResources
     .map((resource) => `<option value="${resource.id}">${escapeHtml(resource.name)}</option>`)
     .join("");
 
-  if (!resources.some((item) => item.id === state.selectedReceiptResourceId)) {
-    state.selectedReceiptResourceId = resources[0]?.id || "";
+  if (!orderedResources.some((item) => item.id === state.selectedReceiptResourceId)) {
+    state.selectedReceiptResourceId = orderedResources[0]?.id || "";
   }
   if (state.selectedReceiptResourceId) {
     els.recTarget.value = state.selectedReceiptResourceId;
@@ -1303,22 +1685,44 @@ function renderResourceReprice(sourceAnalysis) {
   });
 }
 
+function syncAmericasFlagFromLeague(league, { persist = false } = {}) {
+  const nextValue = isAmericasLeague(league);
+  state.manualAmericas = nextValue;
+  els.americasOrderCheckbox.checked = nextValue;
+  if (persist) {
+    queueConsoleSettingsPatch({ manualAmericas: nextValue });
+  }
+}
+
 async function extractSourceMessageToConsole({ toast = true } = {}) {
   const text = state.snapshot?.currentTicket?.sourceMessage?.text || "";
   const sourceAnalysis = analyzeSourceMessage(text);
   const parsed = sourceAnalysis.parsed;
 
-  if (!sourceAnalysis.isStructuredTicket) {
+  if (!sourceAnalysis.isAutoExtractable) {
     if (toast) {
-      notify("当前消息更像反馈/聊天，已保留上一张有效单，不覆盖中控台", "red", true);
+      const message =
+        sourceAnalysis.messageType === "source_receipt"
+          ? "当前消息更像源头回单/确认，不覆盖中控台"
+          : "当前消息更像反馈/聊天，已保留上一张有效单，不覆盖中控台";
+      notify(message, "red", true);
     }
     return;
   }
 
   els.inpLeague.value = parsed.league;
   els.inpTeam.value = parsed.teams;
-  els.inpMarket.value = parsed.marketText;
-  if (parsed.rawOdds) {
+  syncAmericasFlagFromLeague(parsed.league, { persist: true });
+  applyResourcePresetForCurrentOrder(parsed.league, parsed.teams);
+  if (sourceAnalysis.messageType === "prep_ticket") {
+    els.inpMarket.value = "";
+    els.oddsRaw.value = "";
+    state.receiptOddsManual = false;
+    els.recOdds.value = "";
+  } else {
+    els.inpMarket.value = parsed.marketText;
+  }
+  if (sourceAnalysis.messageType === "market_ticket" && parsed.rawOdds) {
     els.oddsRaw.value = parsed.rawOdds;
   } else {
     syncMarketOddsFromInput();
@@ -1342,6 +1746,7 @@ function renderPersistentControls() {
   els.specialTarget.value = formatMoney(state.specialTarget);
   els.followAmount.value = formatMoney(state.followAmount);
   els.americasOrderCheckbox.checked = state.manualAmericas;
+  renderSafetyLockState();
 }
 
 function renderSnapshot(snapshot) {
@@ -1372,12 +1777,13 @@ function renderSnapshot(snapshot) {
     : "等待通道消息";
   els.sourceMessageText.innerHTML = textToHtml(ticket.sourceMessage?.text || "尚未收到新消息");
 
+  applyResourcePresetForCurrentOrder(displayTicket.league, displayTicket.teams);
   calculateLocal();
 
   const sourceFingerprint = `${ticket.sourceChannelId || ""}|${ticket.sourceMessage?.arrivedAt || ""}|${
     ticket.sourceMessage?.text || ""
   }`;
-  if (sourceAnalysis.isStructuredTicket && ticket.sourceMessage?.text && sourceFingerprint !== previousFingerprint) {
+  if (sourceAnalysis.isAutoExtractable && ticket.sourceMessage?.text && sourceFingerprint !== previousFingerprint) {
     state.lastSourceFingerprint = sourceFingerprint;
     void extractSourceMessageToConsole({ toast: false });
   } else {
@@ -1469,6 +1875,9 @@ const syncTicket = debounce(async () => {
     });
     notify("已同步交易单", "blue");
   } catch (error) {
+    if (state.safetyLock && isSafetyLockError(error)) {
+      return;
+    }
     notify(error.message, "red", true);
   }
 }, 300);
@@ -1480,6 +1889,9 @@ function scheduleResourceSync(resourceId, patch) {
       await postResourcePatch(resourceId, patch);
       notify("已同步分销商配置", "blue");
     } catch (error) {
+      if (state.safetyLock && isSafetyLockError(error)) {
+        return;
+      }
       notify(error.message, "red", true);
     }
   }, 300);
@@ -1503,7 +1915,10 @@ function buildSummaryText() {
     const currency = row.querySelector(".resource-currency")?.value || "U";
     return {
       name: row.querySelector(".resource-name")?.value || "",
-      enabled: Boolean(row.querySelector(".resource-send")?.checked),
+      enabled: isResourceEnabled(row),
+      autoSend: Boolean(row.querySelector(".resource-send")?.checked),
+      included: Boolean(row.querySelector(".resource-allocate")?.checked),
+      liveDispatch: Boolean(row.querySelector(".resource-live")?.checked),
       amount,
       currency,
       usdAmount: toUsd(amount, currency),
@@ -1511,8 +1926,8 @@ function buildSummaryText() {
     };
   });
 
-  const enabledResources = resources.filter((item) => item.enabled);
-  const total = enabledResources.reduce((sum, item) => sum + item.usdAmount, 0);
+  const countedResources = resources.filter((item) => item.enabled && item.included);
+  const total = countedResources.reduce((sum, item) => sum + item.usdAmount, 0);
 
   return [
     `单号: ${state.snapshot?.currentTicket?.id || "--"}`,
@@ -1520,14 +1935,14 @@ function buildSummaryText() {
     `品牌: ${ticket.teams}`,
     `报价: ${ticket.marketText}`,
     `回执水位: ${els.oddsFinal.value}`,
-    `总目标: ${formatMoney(Number(els.effectiveTarget.value || 0))}U`,
+    `总目标: ${formatMoney(Number(els.effectiveTarget.dataset.usd || 0))}U`,
     `已分配: ${formatMoney(total)}U`,
     "分销商明细:",
-    ...enabledResources.map(
+    ...countedResources.map(
       (item) =>
         `- ${item.name} | ${item.amount}${item.currency} | 折合 ${formatMoney(item.usdAmount)}U | ${
-          item.remoteId || "未绑定"
-        }`
+          item.liveDispatch ? "连麦" : item.autoSend ? "自动发送" : "仅计额"
+        } | ${item.remoteId || "未绑定"}`
     )
   ].join("\n");
 }
@@ -1556,6 +1971,54 @@ async function sendPrepBroadcast() {
   await sendBroadcastCustom(`${league}\n${teams}`, "已发送预备单");
 }
 
+function bindSafetyLockEvents() {
+  ["click", "dblclick", "input", "change", "beforeinput", "paste", "drop"].forEach((eventName) => {
+    document.addEventListener(eventName, handleSafetyLockGuard, true);
+  });
+
+  document.addEventListener(
+    "keydown",
+    (event) => {
+      if (!state.safetyLock || isSafetyLockBypassTarget(event.target)) {
+        return;
+      }
+
+      const interactiveTarget =
+        event.target instanceof Element
+          ? event.target.closest("input, select, textarea, [contenteditable='true'], button")
+          : null;
+
+      if (!interactiveTarget) {
+        return;
+      }
+
+      handleSafetyLockGuard(event);
+    },
+    true
+  );
+
+  els.safetyLockToggleBtn.addEventListener("click", async () => {
+    const nextLockState = !state.safetyLock;
+    const previousLockState = state.safetyLock;
+    state.safetyLock = nextLockState;
+    renderSafetyLockState();
+
+    try {
+      const saved = await persistConsoleSettingsNow(nextLockState ? "安全锁已开启" : "安全锁已解除", {
+        safetyLock: nextLockState
+      });
+      if (saved === false) {
+        state.safetyLock = previousLockState;
+        renderSafetyLockState();
+      }
+    } catch (error) {
+      state.safetyLock = previousLockState;
+      renderSafetyLockState();
+      notify(error.message, "red", true);
+    }
+  });
+}
+
 function bindCoreInputs() {
   [els.inpLeague, els.inpTeam, els.oddsRaw, els.oddsRebate, els.targetTotal].forEach(
     (element) => {
@@ -1575,25 +2038,25 @@ function bindCoreInputs() {
   els.exchangeRate.addEventListener("input", () => {
     state.exchangeRate = getExchangeRateValue();
     calculateLocal();
-    scheduleConsoleSettingsSync();
+    queueConsoleSettingsPatch({ exchangeRate: state.exchangeRate });
   });
 
   els.specialTarget.addEventListener("input", () => {
     state.specialTarget = getSpecialTargetValue();
     calculateLocal();
-    scheduleConsoleSettingsSync();
+    queueConsoleSettingsPatch({ specialTarget: state.specialTarget });
   });
 
   els.followAmount.addEventListener("input", () => {
     state.followAmount = getFollowAmountValue();
     calculateLocal();
-    scheduleConsoleSettingsSync();
+    queueConsoleSettingsPatch({ followAmount: state.followAmount });
   });
 
   els.americasOrderCheckbox.addEventListener("change", () => {
     state.manualAmericas = els.americasOrderCheckbox.checked;
     calculateLocal();
-    scheduleConsoleSettingsSync();
+    queueConsoleSettingsPatch({ manualAmericas: state.manualAmericas });
   });
 
   [els.recTarget, els.recAmt, els.recCount, els.recOdds].forEach((element) => {
@@ -1712,6 +2175,63 @@ function bindCoreInputs() {
 }
 
 function bindResourceEvents() {
+  function toggleAllResources(enabled) {
+    const rows = Array.from(els.resourceContainer.querySelectorAll(".rc-row"));
+    let skippedLiveDispatch = 0;
+    let skippedInactive = 0;
+
+    rows.forEach((row) => {
+      const sendInput = row.querySelector(".resource-send");
+      const allocationInput = row.querySelector(".resource-allocate");
+      const liveDispatchInput = row.querySelector(".resource-live");
+      const canAmericasInput = row.querySelector(".resource-americas");
+      if (!sendInput) return;
+      if (!isResourceEnabled(row)) {
+        skippedInactive += 1;
+        updateResourceRowState(row);
+        return;
+      }
+
+      const nextEnabled =
+        enabled &&
+        !Boolean(liveDispatchInput?.checked) &&
+        (!isAmericasOrder() || Boolean(canAmericasInput?.checked));
+
+      if (enabled && liveDispatchInput?.checked) {
+        skippedLiveDispatch += 1;
+      }
+
+      sendInput.checked = nextEnabled;
+      if (enabled && allocationInput && !liveDispatchInput?.checked) {
+        allocationInput.checked = nextEnabled;
+      }
+      updateResourceRowState(row);
+
+      const resourceId = row.dataset.resourceId;
+      if (resourceId) {
+        scheduleResourceSync(resourceId, collectResourcePatch(row));
+      }
+    });
+
+    calculateLocal();
+    const message = enabled
+      ? skippedLiveDispatch
+        ? `已全选自动发送资源，保留 ${skippedLiveDispatch} 个连麦客户不自动发送${skippedInactive ? `，跳过 ${skippedInactive} 个停用资源` : ""}`
+        : "已全选自动发送资源"
+      : skippedInactive
+        ? `已取消全选自动发送资源，保留 ${skippedInactive} 个停用资源`
+        : "已取消全选自动发送资源";
+    notify(message, "blue", true);
+  }
+
+  els.resourceSelectAllBtn.addEventListener("click", () => {
+    toggleAllResources(true);
+  });
+
+  els.resourceDeselectAllBtn.addEventListener("click", () => {
+    toggleAllResources(false);
+  });
+
   els.resourceContainer.addEventListener("change", (event) => {
     const row = event.target.closest(".rc-row");
     if (!row) return;
@@ -1726,7 +2246,32 @@ function bindResourceEvents() {
       return;
     }
 
-    if (event.target.matches(".resource-send") || event.target.matches(".resource-americas")) {
+    if (event.target.matches(".resource-live")) {
+      const sendInput = row.querySelector(".resource-send");
+      const allocateInput = row.querySelector(".resource-allocate");
+      if (event.target.checked) {
+        if (sendInput) {
+          sendInput.checked = false;
+        }
+        if (allocateInput) {
+          allocateInput.checked = true;
+        }
+      }
+    }
+
+    if (event.target.matches(".resource-send")) {
+      const liveDispatchInput = row.querySelector(".resource-live");
+      if (event.target.checked && liveDispatchInput?.checked) {
+        liveDispatchInput.checked = false;
+      }
+    }
+
+    if (
+      event.target.matches(".resource-send") ||
+      event.target.matches(".resource-allocate") ||
+      event.target.matches(".resource-live") ||
+      event.target.matches(".resource-americas")
+    ) {
       updateResourceRowState(row);
     }
 
@@ -1756,6 +2301,24 @@ function bindResourceEvents() {
     if (!resourceId) return;
 
     const action = button.dataset.resourceAction;
+    if (action === "toggle-enabled") {
+      const nextEnabled = !isResourceEnabled(row);
+      row.dataset.resourceEnabled = nextEnabled ? "true" : "false";
+      updateResourceRowState(row);
+
+      if (state.snapshot?.resources) {
+        state.snapshot.resources = state.snapshot.resources.map((resource) =>
+          resource.id === resourceId ? { ...resource, ...collectResourcePatch(row) } : resource
+        );
+        renderResources(state.snapshot.resources);
+      }
+
+      scheduleResourceSync(resourceId, collectResourcePatch(row));
+      calculateLocal();
+      notify(nextEnabled ? "已启用资源" : "已停用资源", "blue", true);
+      return;
+    }
+
     if (action === "receipt") {
       loadReceiptResource(resourceId);
       return;
@@ -1830,7 +2393,12 @@ function bindCommandEditorEvents() {
     renderCustomCommands();
 
     try {
-      await persistConsoleSettingsNow("快捷指令已保存");
+      const saved = await persistConsoleSettingsNow("快捷指令已保存", {
+        customCommands: state.customCommands
+      });
+      if (saved === false) {
+        return;
+      }
       closeCommandModal();
     } catch (error) {
       notify(error.message, "red", true);
@@ -2035,6 +2603,7 @@ async function init() {
   renderPersistentControls();
   renderQuickReplies();
   renderCustomCommands();
+  bindSafetyLockEvents();
   bindCoreInputs();
   bindResourceEvents();
   bindCommandEditorEvents();

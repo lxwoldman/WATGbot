@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { EventEmitter } from "node:events";
+import { spawnSync } from "node:child_process";
 import WhatsAppWebJs from "whatsapp-web.js";
 import { logger } from "../lib/logger.js";
 
@@ -46,12 +47,54 @@ function displayNameFromChatId(chatId) {
   return cleanPhoneNumber(chatId) || chatId;
 }
 
+const ACCEPTED_WA_STATES = new Set(["CONNECTED", "OPENING", "PAIRING", "TIMEOUT", "CONFLICT"]);
+
+function withTimeout(promise, ms, label = "operation_timeout") {
+  const timeoutMs = Math.max(1000, Number(ms) || 0);
+  let timer = null;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        reject(new Error(label));
+      }, timeoutMs);
+    })
+  ]).finally(() => {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  });
+}
+
+function isLikelyRuntimeContextError(message) {
+  const text = String(message || "").toLowerCase();
+  return (
+    text.includes("execution context was destroyed") ||
+    text.includes("runtime.callfunctionon") ||
+    text.includes("target closed") ||
+    text.includes("session closed") ||
+    text.includes("page crashed") ||
+    text.includes("page closed")
+  );
+}
+
+function isLikelyLoginLost(message) {
+  const text = String(message || "").toLowerCase();
+  return (
+    text.includes("logout") ||
+    text.includes("unpaired") ||
+    text.includes("auth_failure") ||
+    text.includes("authentication failure")
+  );
+}
+
 export class WhatsAppWebJsAdapter extends EventEmitter {
   constructor(config) {
     super();
     this.config = {
       ...config,
       authDir: path.resolve(config.authDir),
+      sessionDataDir: path.resolve(config.authDir, `session-${config.clientId || "primary"}`),
       discoveryFile: path.resolve(config.discoveryFile || path.join(config.authDir, "_discovered-chats.json")),
       browserPath: config.browserPath || "",
       clientId: config.clientId || "primary",
@@ -63,7 +106,10 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
       maxReconnectAttempts: Number(config.maxReconnectAttempts) || 0,
       breakerFailureThreshold: Number(config.breakerFailureThreshold) || 5,
       breakerCooldownMs: Number(config.breakerCooldownMs) || 30000,
-      discoveryAutosaveDebounceMs: Number(config.discoveryAutosaveDebounceMs) || 200
+      discoveryAutosaveDebounceMs: Number(config.discoveryAutosaveDebounceMs) || 200,
+      healthCheckIntervalMs: Number(config.healthCheckIntervalMs) || 20000,
+      healthCheckTimeoutMs: Number(config.healthCheckTimeoutMs) || 10000,
+      maxHealthFailures: Math.max(1, Number(config.maxHealthFailures) || 2)
     };
     this.client = null;
     this.status = "idle";
@@ -87,6 +133,11 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
     this.discoveredChats = new Map();
     this.discoveryPersistTimer = null;
     this.discoveryPersistPromise = null;
+    this.cleanupPromise = null;
+    this.recoveryPromise = null;
+    this.healthCheckTimer = null;
+    this.consecutiveHealthFailures = 0;
+    this.lastWaState = null;
   }
 
   isConfigured() {
@@ -109,6 +160,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
       lastError: this.lastError,
       lastDisconnectCode: this.lastDisconnectCode,
       reconnectAttempts: this.reconnectAttempts,
+      waState: this.lastWaState,
       sessionDir: this.config.authDir,
       queue: {
         pending: this.queue.length,
@@ -119,6 +171,12 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
         state: this.isCircuitOpen() ? "open" : "closed",
         consecutiveFailures: this.consecutiveFailures,
         openUntil: this.circuitOpenedUntil ? new Date(this.circuitOpenedUntil).toISOString() : null
+      },
+      healthCheck: {
+        intervalMs: this.config.healthCheckIntervalMs,
+        timeoutMs: this.config.healthCheckTimeoutMs,
+        consecutiveFailures: this.consecutiveHealthFailures,
+        maxFailures: this.config.maxHealthFailures
       }
     };
   }
@@ -273,16 +331,22 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
   }
 
   async buildClient() {
+    await this.ensureSessionBrowserStopped();
+
     const client = new Client({
       authStrategy: new LocalAuth({
         clientId: this.config.clientId,
         dataPath: this.config.authDir
       }),
+      authTimeoutMs: 60000,
       browserName: "Chrome",
       deviceName: this.config.browserName || "SupplyConsolePro",
       takeoverOnConflict: true,
       takeoverTimeoutMs: 0,
       qrMaxRetries: 0,
+      webVersionCache: {
+        type: "local"
+      },
       pairWithPhoneNumber:
         this.pendingConnectMode === "pairing_code" && this.pendingPairPhoneNumber
           ? {
@@ -293,12 +357,24 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
           : undefined,
       puppeteer: {
         headless: this.config.headless,
+        protocolTimeout: 120000,
         executablePath: this.config.browserPath || undefined,
         args: [
           "--no-sandbox",
           "--disable-setuid-sandbox",
           "--disable-dev-shm-usage",
-          "--disable-gpu"
+          "--disable-gpu",
+          "--disable-background-timer-throttling",
+          "--disable-backgrounding-occluded-windows",
+          "--disable-renderer-backgrounding",
+          "--disable-features=Translate,OptimizationHints,PaintHolding,BackForwardCache,AcceptCHFrame",
+          "--disable-extensions",
+          "--disable-sync",
+          "--disable-infobars",
+          "--no-first-run",
+          "--no-default-browser-check",
+          "--password-store=basic",
+          "--use-mock-keychain"
         ]
       }
     });
@@ -317,11 +393,27 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
       logger.error("WhatsApp web.js initialization failed", {
         error: error.message
       });
+      if (this.shouldReconnect()) {
+        this.scheduleReconnect();
+      }
     });
     return client;
   }
 
   bindClientEvents(client) {
+    client.on("change_state", (state) => {
+      this.lastWaState = String(state || "");
+      if (state === "CONNECTED") {
+        this.lastError = null;
+      }
+      if (!ACCEPTED_WA_STATES.has(this.lastWaState)) {
+        logger.warn("WhatsApp state changed to unstable value", {
+          state: this.lastWaState
+        });
+      }
+      this.emit("status", this.getStatus());
+    });
+
     client.on("qr", (qr) => {
       this.qr = qr;
       this.pairingCode = null;
@@ -341,6 +433,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
     client.on("authenticated", () => {
       this.connection = "connecting";
       this.lastError = null;
+      this.bindRuntimeObservers(client);
       this.setStatus("authenticated");
     });
 
@@ -353,11 +446,14 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
       this.reconnectAttempts = 0;
       this.consecutiveFailures = 0;
       this.circuitOpenedUntil = 0;
+      this.consecutiveHealthFailures = 0;
       this.user = {
         id: client.info?.wid?._serialized || "",
         name: client.info?.pushname || "",
         platform: client.info?.platform || ""
       };
+      this.bindRuntimeObservers(client);
+      this.startHealthChecks();
       this.setStatus("ready");
       await this.refreshChats();
       logger.info("WhatsApp web.js client ready", {
@@ -366,15 +462,20 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
     });
 
     client.on("auth_failure", (message) => {
+      this.stopHealthChecks();
       this.lastError = message || "Authentication failure";
       this.connection = "close";
+      this.client = null;
       this.setStatus("auth_failure");
       logger.error("WhatsApp authentication failure", {
         error: this.lastError
       });
+
+      void this.cleanupDisconnectedClient(client);
     });
 
     client.on("disconnected", (reason) => {
+      this.stopHealthChecks();
       this.connection = "close";
       this.client = null;
       this.lastError = String(reason || "Connection Closed");
@@ -386,6 +487,8 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
         reason: this.lastError,
         shouldReconnect
       });
+
+      void this.cleanupDisconnectedClient(client);
 
       if (shouldReconnect) {
         this.scheduleReconnect();
@@ -445,7 +548,7 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
     this.reconnectAttempts += 1;
     const delayMs = Math.min(this.config.reconnectDelayMs * this.reconnectAttempts, 30000);
     this.reconnectTimer = setTimeout(() => {
-      void this.ensureClient().catch((error) => {
+      void this.recoverClient("scheduled_reconnect").catch((error) => {
         this.lastError = error.message;
         this.setStatus("error");
         logger.error("Failed to reconnect WhatsApp web.js client", { error: error.message });
@@ -458,6 +561,155 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
+  }
+
+  bindRuntimeObservers(client) {
+    if (!client?.pupBrowser || !client?.pupPage || client.__supplyConsoleRuntimeBound) {
+      return;
+    }
+
+    client.__supplyConsoleRuntimeBound = true;
+
+    client.pupBrowser.on("disconnected", () => {
+      void this.handleRuntimeInstability(client, "browser_disconnected");
+    });
+
+    client.pupPage.on("close", () => {
+      void this.handleRuntimeInstability(client, "page_closed");
+    });
+
+    client.pupPage.on("error", (error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      logger.warn("WhatsApp page runtime error detected", { error: message });
+      void this.handleRuntimeInstability(client, message || "page_error");
+    });
+  }
+
+  async handleRuntimeInstability(client, reason) {
+    if (!client || client !== this.client || client.__supplyConsoleDestroying) {
+      return;
+    }
+
+    if (!this.shouldReconnect()) {
+      return;
+    }
+
+    logger.warn("WhatsApp runtime instability detected", { reason: String(reason || "unknown") });
+    await this.recoverClient("runtime_instability", { reason });
+  }
+
+  startHealthChecks() {
+    this.stopHealthChecks();
+
+    if (this.config.healthCheckIntervalMs <= 0) {
+      return;
+    }
+
+    this.healthCheckTimer = setInterval(() => {
+      void this.runHealthCheck();
+    }, this.config.healthCheckIntervalMs);
+
+    this.healthCheckTimer.unref?.();
+  }
+
+  stopHealthChecks() {
+    if (this.healthCheckTimer) {
+      clearInterval(this.healthCheckTimer);
+      this.healthCheckTimer = null;
+    }
+    this.consecutiveHealthFailures = 0;
+  }
+
+  async runHealthCheck() {
+    const client = this.client;
+    if (!client || this.connection !== "open" || this.status !== "ready" || this.recoveryPromise) {
+      return;
+    }
+
+    try {
+      const waState = await withTimeout(
+        client.getState(),
+        this.config.healthCheckTimeoutMs,
+        "whatsapp_healthcheck_timeout"
+      );
+
+      this.lastWaState = String(waState || this.lastWaState || "");
+
+      if (!ACCEPTED_WA_STATES.has(this.lastWaState)) {
+        throw new Error(`unexpected_wa_state:${this.lastWaState || "unknown"}`);
+      }
+
+      if (!client.pupBrowser?.isConnected?.()) {
+        throw new Error("browser_disconnected");
+      }
+
+      if (client.pupPage?.isClosed?.()) {
+        throw new Error("page_closed");
+      }
+
+      this.consecutiveHealthFailures = 0;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.consecutiveHealthFailures += 1;
+      this.lastError = message;
+      logger.warn("WhatsApp health check failed", {
+        error: message,
+        consecutiveFailures: this.consecutiveHealthFailures
+      });
+
+      if (this.consecutiveHealthFailures < this.config.maxHealthFailures) {
+        return;
+      }
+
+      this.consecutiveHealthFailures = 0;
+      await this.recoverClient("health_check_failure", { reason: message });
+    }
+  }
+
+  async recoverClient(trigger, { reason } = {}) {
+    if (this.recoveryPromise) {
+      return await this.recoveryPromise;
+    }
+
+    if (!this.shouldReconnect()) {
+      return this.getStatus();
+    }
+
+    const detail = reason ? `${trigger}: ${reason}` : trigger;
+
+    this.recoveryPromise = (async () => {
+      this.stopHealthChecks();
+      this.clearReconnectTimer();
+      this.lastError = detail;
+      this.connection = "close";
+      this.setStatus(isLikelyLoginLost(detail) ? "awaiting_login" : "reconnecting");
+      await this.destroyClient(false);
+
+      if (!this.shouldReconnect()) {
+        return this.getStatus();
+      }
+
+      await sleep(Math.min(this.config.reconnectDelayMs, 1500));
+      await this.ensureClient();
+      return this.getStatus();
+    })()
+      .catch((error) => {
+        this.lastError = error.message;
+        logger.error("Failed to recover WhatsApp client", {
+          trigger,
+          reason: detail,
+          error: error.message
+        });
+        if (this.shouldReconnect()) {
+          this.scheduleReconnect();
+        }
+        return this.getStatus();
+      })
+      .finally(() => {
+        this.recoveryPromise = null;
+      });
+
+    return await this.recoveryPromise;
   }
 
   isCircuitOpen() {
@@ -537,6 +789,9 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
         });
       } catch (error) {
         this.recordSendFailure(error);
+        if (isLikelyRuntimeContextError(error.message)) {
+          void this.recoverClient("send_failure", { reason: error.message });
+        }
         task.reject(error);
       }
     }
@@ -564,6 +819,9 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
       logger.warn("Failed to refresh WhatsApp chats list.", {
         error: error.message
       });
+      if (isLikelyRuntimeContextError(error.message)) {
+        void this.recoverClient("refresh_chats_failure", { reason: error.message });
+      }
     }
   }
 
@@ -644,18 +902,15 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
   }
 
   async destroyClient(clearAuth = false) {
+    if (this.cleanupPromise) {
+      await this.cleanupPromise;
+    }
+
+    this.stopHealthChecks();
     this.clearReconnectTimer();
     const client = this.client;
     this.client = null;
-    if (client) {
-      try {
-        await client.destroy();
-      } catch (error) {
-        logger.warn("Failed to destroy WhatsApp client cleanly.", {
-          error: error.message
-        });
-      }
-    }
+    await this.cleanupClientResources(client);
 
     if (clearAuth) {
       await fs.rm(this.config.authDir, { recursive: true, force: true });
@@ -675,6 +930,8 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
     this.isProcessingQueue = false;
     this.consecutiveFailures = 0;
     this.circuitOpenedUntil = 0;
+    this.consecutiveHealthFailures = 0;
+    this.lastWaState = null;
     this.discoveredChats.clear();
     this.scheduleDiscoveryPersist();
   }
@@ -682,5 +939,106 @@ export class WhatsAppWebJsAdapter extends EventEmitter {
   setStatus(status) {
     this.status = status;
     this.emit("status", this.getStatus());
+  }
+
+  async cleanupDisconnectedClient(client) {
+    this.cleanupPromise = this.cleanupClientResources(client);
+
+    try {
+      await this.cleanupPromise;
+    } finally {
+      this.cleanupPromise = null;
+    }
+  }
+
+  async cleanupClientResources(client) {
+    this.stopHealthChecks();
+
+    if (client) {
+      try {
+        client.__supplyConsoleDestroying = true;
+        await client.destroy();
+      } catch (error) {
+        logger.warn("Failed to destroy WhatsApp client cleanly.", {
+          error: error.message
+        });
+      }
+    }
+
+    await this.forceKillSessionBrowsers();
+    await this.cleanupSessionLocks();
+  }
+
+  async ensureSessionBrowserStopped() {
+    await this.forceKillSessionBrowsers();
+    await this.cleanupSessionLocks();
+    await sleep(350);
+    await fs.mkdir(this.config.sessionDataDir, { recursive: true });
+  }
+
+  async cleanupSessionLocks() {
+    const staticLockFiles = [
+      "SingletonLock",
+      "SingletonSocket",
+      "SingletonCookie",
+      "DevToolsActivePort"
+    ];
+    const lockPatterns = [/^\.org\.chromium\.Chromium\./, /^\.com\.google\.Chrome\./];
+
+    await Promise.allSettled(
+      staticLockFiles.map(async (name) => {
+        await fs.rm(path.join(this.config.sessionDataDir, name), {
+          recursive: true,
+          force: true
+        });
+      })
+    );
+
+    try {
+      const entries = await fs.readdir(this.config.sessionDataDir);
+      await Promise.allSettled(
+        entries
+          .filter((name) => lockPatterns.some((pattern) => pattern.test(name)))
+          .map(async (name) => {
+            await fs.rm(path.join(this.config.sessionDataDir, name), {
+              recursive: true,
+              force: true
+            });
+          })
+      );
+    } catch (error) {
+      if (error.code !== "ENOENT") {
+        logger.warn("Failed to clean WhatsApp session lock files.", {
+          error: error.message
+        });
+      }
+    }
+  }
+
+  async forceKillSessionBrowsers() {
+    const marker = `--user-data-dir=${this.config.sessionDataDir}`;
+    const pgrep = spawnSync("pgrep", ["-f", marker], {
+      encoding: "utf8"
+    });
+
+    if (pgrep.status !== 0 || !pgrep.stdout.trim()) {
+      return;
+    }
+
+    const pids = pgrep.stdout
+      .split(/\s+/)
+      .map((value) => Number(value))
+      .filter((pid) => Number.isInteger(pid) && pid > 0 && pid !== process.pid);
+
+    for (const pid of pids) {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch (error) {
+        logger.warn("Failed to kill stale WhatsApp browser process.", {
+          pid,
+          error: error.message
+        });
+      }
+    }
   }
 }

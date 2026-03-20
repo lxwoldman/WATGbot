@@ -42,7 +42,10 @@ export const env = {
     reconnectDelayMs: numberFromEnv("WHATSAPP_RECONNECT_DELAY_MS", 3000),
     maxReconnectAttempts: numberFromEnv("WHATSAPP_MAX_RECONNECT_ATTEMPTS", 0),
     discoveryFile: process.env.WHATSAPP_DISCOVERY_FILE || "",
-    discoveryAutosaveDebounceMs: numberFromEnv("WHATSAPP_DISCOVERY_AUTOSAVE_DEBOUNCE_MS", 200)
+    discoveryAutosaveDebounceMs: numberFromEnv("WHATSAPP_DISCOVERY_AUTOSAVE_DEBOUNCE_MS", 200),
+    healthCheckIntervalMs: numberFromEnv("WHATSAPP_HEALTHCHECK_INTERVAL_MS", 20000),
+    healthCheckTimeoutMs: numberFromEnv("WHATSAPP_HEALTHCHECK_TIMEOUT_MS", 10000),
+    maxHealthFailures: numberFromEnv("WHATSAPP_MAX_HEALTH_FAILURES", 2)
   },
   telegram: {
     apiId: numberFromEnv("TELEGRAM_API_ID", 0),
