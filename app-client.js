@@ -177,7 +177,9 @@ const state = {
   resourceSyncTimers: {},
   lastSourceFingerprint: "",
   latestFeedbackPrice: "",
+  latestFeedbackMeta: null,
   latestSupplierRepriceText: "",
+  latestSupplierRepriceMeta: null,
   americasAutoDisabled: {},
   lastResourcePresetKey: "",
   customCommands: defaultCustomCommands.map((item, index) => normalizeCommand(item, index)),
@@ -442,6 +444,7 @@ function isAmericasOrder() {
 function currentTicketPatch() {
   return {
     sourceChannelId: els.sourceChannelSelect.value,
+    isAmericasOrder: isAmericasOrder(),
     league: els.inpLeague.value.trim(),
     teams: els.inpTeam.value.trim(),
     marketText: els.inpMarket.value.trim(),
@@ -622,6 +625,7 @@ function buildTicketDraftFromSourceText(text, baseTicket = {}) {
 function normalizeTicketDraft(ticket = {}) {
   return {
     sourceChannelId: ticket.sourceChannelId || "",
+    isAmericasOrder: Boolean(ticket.isAmericasOrder),
     league: String(ticket.league || "").trim(),
     teams: String(ticket.teams || "").trim(),
     marketText: String(ticket.marketText || "").trim(),
@@ -1094,6 +1098,9 @@ function buildResourcePresetKey(league, teams) {
 }
 
 function applyResourcePresetForCurrentOrder(league, teams) {
+  if (state.safetyLock) {
+    return;
+  }
   const presetKey = buildResourcePresetKey(league, teams);
   if (!presetKey || presetKey === state.lastResourcePresetKey) {
     return;
@@ -1238,6 +1245,9 @@ function collectResourcePatch(row) {
 }
 
 function applyAmericasConstraints() {
+  if (state.safetyLock) {
+    return;
+  }
   const americasOrder = isAmericasOrder();
 
   document.querySelectorAll(".rc-row").forEach((row) => {
@@ -1611,81 +1621,119 @@ function renderFeedbackBox(box, textElement, buttonElement, options) {
   const idleText = options.idleText;
   const actionText = options.actionText;
   const hasValue = Boolean(options.value);
+  const detailText = options.detailText || "";
 
   box.classList.toggle("empty", !hasValue);
-  textElement.innerHTML = `<span class="feedback-title">${escapeHtml(title)}</span><b>${escapeHtml(value)}</b>`;
+  textElement.innerHTML = `<span class="feedback-title">${escapeHtml(title)}</span><b>${escapeHtml(value)}</b>${
+    detailText ? `<span class="feedback-detail">${escapeHtml(detailText)}</span>` : ""
+  }`;
   buttonElement.disabled = !hasValue;
   buttonElement.textContent = hasValue ? `${actionText} ${value}` : idleText;
 }
 
-function parseReceivedLogEntry(log) {
-  const message = String(log?.message || "");
-  const match = message.match(/^收到 (WhatsApp|Telegram UserBot) 消息:\s*([\s\S]+)$/);
-  if (!match) return null;
-
-  return {
-    platform: match[1] === "WhatsApp" ? "whatsapp" : "telegram",
-    text: match[2].trim()
-  };
+function formatFeedbackTime(at) {
+  if (!at) return "";
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return "";
+  return date.toLocaleTimeString("zh-CN", { hour12: false });
 }
 
-function findLatestFeedbackPrice(logs, currentSource) {
-  let sourceEchoSkipped = false;
-
-  for (const log of logs || []) {
-    const entry = parseReceivedLogEntry(log);
-    if (!entry?.text) continue;
-
-    if (
-      !sourceEchoSkipped &&
-      currentSource?.text &&
-      currentSource?.platform &&
-      entry.platform === currentSource.platform &&
-      entry.text === currentSource.text
-    ) {
-      sourceEchoSkipped = true;
-      continue;
-    }
-
-    const signal = extractFeedbackSignal(entry.text);
-    if (!signal) continue;
-
-    return signal.text;
+function formatFeedbackSourceLabel(candidate) {
+  if (!candidate) return "";
+  if (candidate.roleHint === "resource") {
+    return candidate.resourceName || candidate.resourceId || candidate.remoteId || "资源";
   }
+  if (candidate.roleHint === "supplier") {
+    return candidate.sourceChannelLabel || candidate.sourceChannelId || candidate.remoteId || "源头";
+  }
+  return candidate.remoteId || candidate.platform || "";
+}
 
-  return "";
+function buildFeedbackCandidates(snapshot) {
+  const inboundMessages = Array.isArray(snapshot?.inboundMessages) ? snapshot.inboundMessages : [];
+  const candidates = inboundMessages
+    .map((message, index) => {
+      const text = String(message?.text || "").trim();
+      if (!text) return null;
+      if (analyzeSourceMessage(text).messageType !== "chat") {
+        return null;
+      }
+
+      const signal = extractFeedbackSignal(text);
+      if (!signal) return null;
+
+      const resource = message.resourceId ? getResourceById(message.resourceId) : null;
+      const sourceChannel = message.sourceChannelId ? getSourceChannelById(message.sourceChannelId) : null;
+      let score = Number(signal.score || 0) + Math.max(0, 30 - index);
+      if (message.roleHint === "resource") score += 12;
+      if (message.roleHint === "supplier") score += 8;
+      if (message.sourceChannelId && message.sourceChannelId === state.selectedSourceId) score += 4;
+
+      return {
+        signalText: signal.text,
+        signalPrice: signal.price,
+        resourceId: message.resourceId || "",
+        resourceName: resource?.name || "",
+        sourceChannelId: message.sourceChannelId || "",
+        sourceChannelLabel: sourceChannel?.label || "",
+        remoteId: message.remoteId || "",
+        at: message.at || "",
+        roleHint: message.roleHint || "",
+        platform: message.platform || "",
+        score
+      };
+    })
+    .filter(Boolean);
+
+  candidates.sort((left, right) => {
+    if (right.score !== left.score) return right.score - left.score;
+    return Date.parse(right.at || 0) - Date.parse(left.at || 0);
+  });
+
+  return candidates;
 }
 
 function renderSupplierFeedback(snapshot) {
-  const ticket = snapshot.currentTicket || {};
-  const sourceChannel = getSourceChannelById(ticket.sourceChannelId);
-  const price = findLatestFeedbackPrice(snapshot.logs, {
-    platform: sourceChannel?.type || "",
-    text: ticket.sourceMessage?.text || ""
-  });
-  state.latestFeedbackPrice = price;
+  const candidate =
+    buildFeedbackCandidates(snapshot).find((item) => item.roleHint === "resource") || null;
+  state.latestFeedbackPrice = candidate?.signalText || "";
+  state.latestFeedbackMeta = candidate;
 
   renderFeedbackBox(els.supplierFeedbackBox, els.supplierFeedbackText, els.supplierFeedbackBtn, {
     title: "下游反馈",
-    value: price,
+    value: candidate?.signalText || "",
+    detailText: candidate ? `${formatFeedbackSourceLabel(candidate)} · ${formatFeedbackTime(candidate.at)}` : "",
     actionText: "向供应商反馈",
     idleText: "等待下游反馈"
   });
 }
 
-function renderResourceReprice(sourceAnalysis) {
-  const repriceText = sourceAnalysis?.feedbackSignal?.text || "";
+function renderResourceReprice(snapshot) {
+  const currentSourceId = state.snapshot?.currentTicket?.sourceChannelId || "";
+  const candidates = buildFeedbackCandidates(snapshot);
+  const candidate =
+    candidates.find(
+      (item) => item.roleHint === "supplier" && (!currentSourceId || item.sourceChannelId === currentSourceId)
+    ) ||
+    candidates.find((item) => item.roleHint === "supplier") ||
+    null;
+  const repriceText = candidate?.signalText || "";
   state.latestSupplierRepriceText = repriceText;
+  state.latestSupplierRepriceMeta = candidate;
 
   renderFeedbackBox(els.resourceRepriceBox, els.resourceRepriceText, els.resourceRepriceBtn, {
     title: "源头反馈",
     value: repriceText,
+    detailText: candidate ? `${formatFeedbackSourceLabel(candidate)} · ${formatFeedbackTime(candidate.at)}` : "",
     actionText: "向资源同步",
     idleText: "等待源头反馈"
   });
 }
 
 function syncAmericasFlagFromLeague(league, { persist = false } = {}) {
+  if (state.safetyLock) {
+    return;
+  }
   const nextValue = isAmericasLeague(league);
   state.manualAmericas = nextValue;
   els.americasOrderCheckbox.checked = nextValue;
@@ -1695,6 +1743,10 @@ function syncAmericasFlagFromLeague(league, { persist = false } = {}) {
 }
 
 async function extractSourceMessageToConsole({ toast = true } = {}) {
+  if (state.safetyLock) {
+    maybeNotifySafetyLock();
+    return;
+  }
   const text = state.snapshot?.currentTicket?.sourceMessage?.text || "";
   const sourceAnalysis = analyzeSourceMessage(text);
   const parsed = sourceAnalysis.parsed;
@@ -1756,11 +1808,12 @@ function renderSnapshot(snapshot) {
   const ticket = snapshot.currentTicket || {};
   const sourceAnalysis = analyzeSourceMessage(ticket.sourceMessage?.text || "");
   const displayTicket = getProtectedConsoleTicket(ticket, sourceAnalysis, snapshot.logs || []);
+  state.manualAmericas = Boolean(ticket.isAmericasOrder ?? state.manualAmericas);
   renderPersistentControls();
   renderSourceChannels(snapshot);
   renderResources(snapshot.resources || []);
   renderSupplierFeedback(snapshot);
-  renderResourceReprice(sourceAnalysis);
+  renderResourceReprice(snapshot);
 
   setBadge(els.ticketIdBadge, `单号 ${ticket.id || "--"}`);
   els.inpLeague.value = displayTicket.league || "";
@@ -1783,9 +1836,13 @@ function renderSnapshot(snapshot) {
   const sourceFingerprint = `${ticket.sourceChannelId || ""}|${ticket.sourceMessage?.arrivedAt || ""}|${
     ticket.sourceMessage?.text || ""
   }`;
-  if (sourceAnalysis.isAutoExtractable && ticket.sourceMessage?.text && sourceFingerprint !== previousFingerprint) {
+  if (ticket.sourceMessage?.text && sourceFingerprint !== previousFingerprint) {
     state.lastSourceFingerprint = sourceFingerprint;
-    void extractSourceMessageToConsole({ toast: false });
+    if (state.safetyLock) {
+      notify("安全锁开启中：检测到新消息，待手动提取", "amber", true);
+    } else if (sourceAnalysis.isAutoExtractable) {
+      void extractSourceMessageToConsole({ toast: false });
+    }
   } else {
     state.lastSourceFingerprint = sourceFingerprint;
   }
@@ -1952,12 +2009,44 @@ async function copyText(text, successText) {
   notify(successText, "blue", true);
 }
 
-async function sendBroadcastCustom(text, successText) {
-  await api("/api/actions/broadcast-custom", {
+function formatDispatchSummary(result, successLabel = "已发送") {
+  if (!result) {
+    return successLabel;
+  }
+  if (!result.total) {
+    return "当前没有可发送的资源";
+  }
+  if (!result.failed) {
+    return `${successLabel} ${result.sent}/${result.total}`;
+  }
+  return `部分发送成功：成功 ${result.sent}，失败 ${result.failed}`;
+}
+
+function buildDispatchFailureDetail(result) {
+  if (!result?.failed) {
+    return "";
+  }
+  const failedNames = (result.items || [])
+    .filter((item) => item.status === "failed")
+    .map((item) => item.resourceName || item.resourceId)
+    .filter(Boolean)
+    .slice(0, 6);
+
+  return failedNames.length ? `；失败资源：${failedNames.join("、")}` : "";
+}
+
+function notifyDispatchResult(result, successLabel = "已发送") {
+  const message = `${formatDispatchSummary(result, successLabel)}${buildDispatchFailureDetail(result)}`;
+  notify(message, result?.failed ? "red" : "blue", true);
+}
+
+async function sendBroadcastCustom(text, successText = "已发送") {
+  const result = await api("/api/actions/broadcast-custom", {
     method: "POST",
     body: { text }
   });
-  notify(successText, "blue", true);
+  notifyDispatchResult(result, successText);
+  return result;
 }
 
 async function sendPrepBroadcast() {
@@ -1968,7 +2057,7 @@ async function sendPrepBroadcast() {
     return;
   }
 
-  await sendBroadcastCustom(`${league}\n${teams}`, "已发送预备单");
+  return await sendBroadcastCustom(`${league}\n${teams}`, "预备单已发送");
 }
 
 function bindSafetyLockEvents() {
@@ -2057,6 +2146,7 @@ function bindCoreInputs() {
     state.manualAmericas = els.americasOrderCheckbox.checked;
     calculateLocal();
     queueConsoleSettingsPatch({ manualAmericas: state.manualAmericas });
+    syncTicket();
   });
 
   [els.recTarget, els.recAmt, els.recCount, els.recOdds].forEach((element) => {
@@ -2153,8 +2243,8 @@ function bindCoreInputs() {
 
   els.coreMarketBtn.addEventListener("click", async () => {
     try {
-      await api("/api/actions/broadcast-market", { method: "POST" });
-      notify("已发送报价", "blue", true);
+      const result = await api("/api/actions/broadcast-market", { method: "POST" });
+      notifyDispatchResult(result, "报价已发送");
     } catch (error) {
       notify(error.message, "red", true);
     }

@@ -3,6 +3,7 @@ export const bootstrapData = {
     id: "T-001",
     status: "active",
     sourceChannelId: "wa-source-alpha",
+    isAmericasOrder: false,
     league: "韩国K甲组联赛",
     teams: "江原 v 安阳",
     marketText: "小 2 / 2.5 @ 0.90",
@@ -28,6 +29,7 @@ export const bootstrapData = {
       { id: "urge", label: "催单", text: "好了吗" }
     ]
   },
+  inboundMessages: [],
   sourceChannels: [
     {
       id: "wa-source-alpha",

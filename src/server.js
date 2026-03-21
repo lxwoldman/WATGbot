@@ -16,6 +16,10 @@ function normalizeWhatsAppMatch(value) {
     .replace(/@s\.whatsapp\.net$/, "@c.us");
 }
 
+function matchTelegramId(left, right) {
+  return String(left || "") === String(right || "");
+}
+
 assertNodeVersion();
 
 const store = new StoreService(env.store);
@@ -70,21 +74,38 @@ whatsappAdapter.on("status", (status) => {
 
 whatsappAdapter.on("message", (message) => {
   const text = message.text || "[非文本消息]";
+  const receivedAt = new Date(Number(message.timestamp || Date.now() / 1000) * 1000);
   const sourceChannel = store.state.sourceChannels.find(
     (channel) =>
       channel.type === "whatsapp" &&
       normalizeWhatsAppMatch(channel.remoteId || "") === normalizeWhatsAppMatch(message.chatId || "")
   );
+  const resource = store.state.resources.find(
+    (item) =>
+      item.platform === "whatsapp" &&
+      normalizeWhatsAppMatch(item.remoteId || "") === normalizeWhatsAppMatch(message.chatId || "")
+  );
 
   if (sourceChannel) {
     store.state.currentTicket.sourceChannelId = sourceChannel.id;
     store.state.currentTicket.sourceMessage = {
-      arrivedAt: new Date(Number(message.timestamp || Date.now() / 1000) * 1000).toLocaleTimeString("zh-CN", {
+      arrivedAt: receivedAt.toLocaleTimeString("zh-CN", {
         hour12: false
       }),
       text
     };
   }
+
+  store.appendInboundMessage({
+    at: receivedAt.toISOString(),
+    platform: "whatsapp",
+    remoteId: String(message.chatId || ""),
+    text,
+    direction: "inbound",
+    roleHint: sourceChannel ? "supplier" : resource ? "resource" : "",
+    sourceChannelId: sourceChannel?.id || "",
+    resourceId: resource?.id || ""
+  });
 
   store.appendLog(`收到 WhatsApp 消息: ${text}`);
   if (ioRef) {
@@ -98,17 +119,32 @@ whatsappAdapter.on("message", (message) => {
 
 telegramAdapter.on("message", (message) => {
   const text = message.text || "[非文本消息]";
+  const receivedAt = new Date(message.date);
   const sourceChannel = store.state.sourceChannels.find(
-    (channel) => channel.type === "telegram" && String(channel.remoteId || "") === String(message.chatId || "")
+    (channel) => channel.type === "telegram" && matchTelegramId(channel.remoteId || "", message.chatId || "")
+  );
+  const resource = store.state.resources.find(
+    (item) => item.platform === "telegram" && matchTelegramId(item.remoteId || "", message.chatId || "")
   );
 
   if (sourceChannel) {
     store.state.currentTicket.sourceChannelId = sourceChannel.id;
     store.state.currentTicket.sourceMessage = {
-      arrivedAt: new Date(message.date).toLocaleTimeString("zh-CN", { hour12: false }),
+      arrivedAt: receivedAt.toLocaleTimeString("zh-CN", { hour12: false }),
       text
     };
   }
+
+  store.appendInboundMessage({
+    at: receivedAt.toISOString(),
+    platform: "telegram",
+    remoteId: String(message.chatId || ""),
+    text,
+    direction: "inbound",
+    roleHint: sourceChannel ? "supplier" : resource ? "resource" : "",
+    sourceChannelId: sourceChannel?.id || "",
+    resourceId: resource?.id || ""
+  });
 
   store.appendLog(`收到 Telegram UserBot 消息: ${text}`);
   if (ioRef) {

@@ -83,6 +83,20 @@ function normalizeSourceChannel(channel = {}) {
   };
 }
 
+function normalizeInboundMessage(entry = {}) {
+  return {
+    id: String(entry.id || crypto.randomUUID()),
+    at: String(entry.at || new Date().toISOString()),
+    platform: entry.platform === "telegram" ? "telegram" : "whatsapp",
+    remoteId: String(entry.remoteId || ""),
+    text: String(entry.text || ""),
+    direction: "inbound",
+    roleHint: entry.roleHint === "supplier" || entry.roleHint === "resource" ? entry.roleHint : "",
+    sourceChannelId: String(entry.sourceChannelId || ""),
+    resourceId: String(entry.resourceId || "")
+  };
+}
+
 export class StoreService {
   constructor(config = {}) {
     this.config = {
@@ -115,6 +129,9 @@ export class StoreService {
             ...(parsed.state.currentTicket || {})
           },
           consoleSettings: normalizeConsoleSettings(parsed.state.consoleSettings),
+          inboundMessages: Array.isArray(parsed.state.inboundMessages)
+            ? parsed.state.inboundMessages.map((item) => normalizeInboundMessage(item)).slice(0, 300)
+            : [],
           sourceChannels: Array.isArray(parsed.state.sourceChannels)
             ? parsed.state.sourceChannels.map((item) => normalizeSourceChannel(item))
             : bootstrapData.sourceChannels.map((item) => normalizeSourceChannel(item)),
@@ -158,6 +175,7 @@ export class StoreService {
         gap
       },
       consoleSettings: clone(consoleSettings),
+      inboundMessages: clone(this.state.inboundMessages || []),
       sourceChannels: clone(this.state.sourceChannels),
       resources: clone(resources),
       logs: clone(this.logs)
@@ -302,6 +320,13 @@ export class StoreService {
     return clone(removed);
   }
 
+  appendInboundMessage(entry) {
+    const normalized = normalizeInboundMessage(entry);
+    this.state.inboundMessages = [normalized, ...(this.state.inboundMessages || [])].slice(0, 300);
+    this.schedulePersist();
+    return clone(normalized);
+  }
+
   buildReceipt(resourceId, amountOverride, slipCountOverride) {
     const resource = this.state.resources.find((item) => item.id === resourceId);
     if (!resource) return null;
@@ -322,6 +347,12 @@ export class StoreService {
         amount
       })
     };
+  }
+
+  recordDispatchSummary(kind, summary, text = "") {
+    this.appendLog(
+      `[${kind}] 成功 ${summary.sent}/${summary.total}，失败 ${summary.failed}${text ? `，内容: ${text}` : ""}`
+    );
   }
 
   schedulePersist() {

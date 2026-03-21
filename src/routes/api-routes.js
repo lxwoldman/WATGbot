@@ -83,6 +83,9 @@ function sanitizeTicketPatch(payload = {}) {
   if ("sourceChannelId" in payload) {
     patch.sourceChannelId = sanitizeString(payload.sourceChannelId);
   }
+  if ("isAmericasOrder" in payload) {
+    patch.isAmericasOrder = sanitizeBoolean(payload.isAmericasOrder);
+  }
   if ("league" in payload) {
     patch.league = sanitizeString(payload.league);
   }
@@ -173,6 +176,23 @@ function sanitizeSourceChannelPatch(payload = {}) {
   return patch;
 }
 
+function buildDispatchResponse(summary) {
+  return {
+    partialFailure: summary.failed > 0,
+    ...summary
+  };
+}
+
+function buildFailedDispatchItems(summary) {
+  return summary.items
+    .filter((item) => item.status === "failed")
+    .map((item) => ({
+      resourceId: item.resourceId,
+      resourceName: item.resourceName,
+      error: item.error
+    }));
+}
+
 export function createApiRouter({ store, routerService, getIo, whatsappAdapter, telegramAdapter }) {
   const router = express.Router();
 
@@ -210,6 +230,9 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
       return;
     }
 
+    void audit(req, "safety_lock.blocked", req.path, {
+      method: req.method
+    });
     fail(res, "Safety lock is enabled. Unlock before operating.", 423);
   });
 
@@ -516,18 +539,17 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
     try {
       const ticket = store.getSnapshot().currentTicket;
       const text = `${ticket.league}\n${ticket.teams}\n预备单`;
-      const result = await routerService.broadcastToEnabledResources(text, (resource) => {
-        if (ticket.league.includes("阿根廷") && !resource.canAmericas) {
-          return false;
-        }
-        return true;
-      });
+      const summary = await routerService.broadcastToEnabledResources(text, () => true, ticket);
+      store.recordDispatchSummary("broadcast_prep", summary, text);
       await audit(req, "action.broadcast_prep", "resources.enabled", {
-        recipients: Array.isArray(result) ? result.length : 0,
-        ticketId: ticket.id
+        ticketId: ticket.id,
+        total: summary.total,
+        sent: summary.sent,
+        failed: summary.failed,
+        failedItems: buildFailedDispatchItems(summary)
       });
       maybeEmit(getIo, store);
-      ok(res, result);
+      ok(res, buildDispatchResponse(summary));
     } catch (error) {
       fail(res, error.message, 500);
     }
@@ -536,18 +558,17 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
   router.post("/actions/broadcast-market", async (req, res) => {
     try {
       const ticket = store.getSnapshot().currentTicket;
-      const result = await routerService.broadcastToEnabledResources(ticket.marketText, (resource) => {
-        if (ticket.league.includes("阿根廷") && !resource.canAmericas) {
-          return false;
-        }
-        return true;
-      });
+      const summary = await routerService.broadcastToEnabledResources(ticket.marketText, () => true, ticket);
+      store.recordDispatchSummary("broadcast_market", summary, ticket.marketText);
       await audit(req, "action.broadcast_market", "resources.enabled", {
-        recipients: Array.isArray(result) ? result.length : 0,
-        ticketId: ticket.id
+        ticketId: ticket.id,
+        total: summary.total,
+        sent: summary.sent,
+        failed: summary.failed,
+        failedItems: buildFailedDispatchItems(summary)
       });
       maybeEmit(getIo, store);
-      ok(res, result);
+      ok(res, buildDispatchResponse(summary));
     } catch (error) {
       fail(res, error.message, 500);
     }
@@ -559,13 +580,18 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
       if (!text) {
         return fail(res, "text is required.");
       }
-      const result = await routerService.broadcastToEnabledResources(text);
+      const ticket = store.getSnapshot().currentTicket;
+      const summary = await routerService.broadcastToEnabledResources(text, () => true, ticket);
+      store.recordDispatchSummary("broadcast_custom", summary, text);
       await audit(req, "action.broadcast_custom", "resources.enabled", {
-        recipients: Array.isArray(result) ? result.length : 0,
+        total: summary.total,
+        sent: summary.sent,
+        failed: summary.failed,
+        failedItems: buildFailedDispatchItems(summary),
         text
       });
       maybeEmit(getIo, store);
-      ok(res, result);
+      ok(res, buildDispatchResponse(summary));
     } catch (error) {
       fail(res, error.message, 500);
     }
@@ -592,7 +618,8 @@ export function createApiRouter({ store, routerService, getIo, whatsappAdapter, 
       } else {
         return fail(res, "Unsupported kind.", 400);
       }
-      const result = await routerService.sendToResource(resourceId, text);
+      const ticket = store.getSnapshot().currentTicket;
+      const result = await routerService.sendToResource(resourceId, text, { ticket });
       await audit(req, "action.resource_send", `resource.${resourceId}`, {
         kind,
         text
